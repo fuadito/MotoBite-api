@@ -185,13 +185,17 @@ router.post('/register', async (req, res) => {
     }
 
     // Create new rider with pending status
+    const { idPath, licPath, selfiePath } = req.body;
     const { data, error } = await supabase
       .from('riders')
       .insert({
         phone,
         name,
-        status: 'pending'
-      })
+        status:            'pending',
+        id_photo_url:      idPath || null,
+        license_photo_url: licPath || null,
+        selfie_url:        selfiePath || null
+    })
       .select()
       .single();
 
