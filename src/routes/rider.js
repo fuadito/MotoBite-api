@@ -155,3 +155,54 @@ router.get('/active-order', async (req, res) => {
 
 
 export default router;
+
+
+// POST /api/rider/register
+// Called when rider submits their application
+// Saves rider to database with status 'pending'
+
+router.post('/register', async (req, res) => {
+  try {
+    const { phone, name } = req.body;
+
+    if (!phone || !name) {
+      return res.status(400).json({ error: 'Phone and name are required' });
+    }
+
+    // Check if rider already exists
+    const { data: existing } = await supabase
+      .from('riders')
+      .select('id, status')
+      .eq('phone', phone)
+      .single();
+
+    if (existing) {
+      return res.json({ 
+        success: true, 
+        status: existing.status,
+        message: 'Application already submitted'
+      });
+    }
+
+    // Create new rider with pending status
+    const { data, error } = await supabase
+      .from('riders')
+      .insert({
+        phone,
+        name,
+        status: 'pending'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    console.log(`🏍️ New rider application: ${name} (${phone})`);
+
+    res.json({ success: true, status: 'pending' });
+
+  } catch (err) {
+    console.error('Rider register error:', err.message);
+    res.status(500).json({ error: 'Could not save application' });
+  }
+});
