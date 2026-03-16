@@ -19,7 +19,7 @@ router.get('/orders', async (req, res) => {
     const { data, error } = await supabase
       .from('orders')
       .select('*')
-      .in('status', ['paid', 'cooking', 'ready', 'rider_assigned'])
+      .in('status', ['pending','paid', 'cooking', 'ready', 'rider_assigned'])
       .order('created_at', { ascending: true }); // oldest first — FIFO
 
     if (error) throw error;
