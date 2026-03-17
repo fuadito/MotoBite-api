@@ -49,6 +49,7 @@ import kitchenRoutes  from './routes/kitchen.js';
 import adminRoutes    from './routes/admin.js';
 import mpesaRoutes    from './routes/mpesa.js';
 import menuRoutes     from './routes/menu.js';
+import { redispatchStaleOrders } from './services/dispatch.js';
 
 app.use('/api/customer', customerRoutes);
 app.use('/api/orders',   orderRoutes);
@@ -78,4 +79,9 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`✅ KFC Narok Backend running on http://localhost:${PORT}`);
   console.log(`📋 Health check: http://localhost:${PORT}/health`);
+
+   // Re-dispatch any "ready" orders with no rider every 3 minutes
+  // Catches cases where no riders were online when kitchen first marked ready
+  setInterval(redispatchStaleOrders, 3 * 60 * 1000);
+  console.log(`🔄 Re-dispatch timer started — checks every 3 minutes`);
 });

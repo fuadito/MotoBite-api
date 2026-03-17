@@ -11,6 +11,59 @@ import supabase from '../services/supabase.js';
 
 const router = express.Router();
 
+// POST /api/rider/register
+// Called when rider submits their application with documents
+// Saves rider to database with status 'pending' for admin review
+
+router.post('/register', async (req, res) => {
+  try {
+    const { phone, name, idPath, licPath, selfiePath } = req.body;
+
+    if (!phone || !name) {
+      return res.status(400).json({ error: 'Phone and name are required' });
+    }
+
+    // Check if rider already applied
+    const { data: existing } = await supabase
+      .from('riders')
+      .select('id, status')
+      .eq('phone', phone)
+      .single();
+
+    if (existing) {
+      return res.json({
+        success: true,
+        status:  existing.status,
+        message: 'Application already submitted'
+      });
+    }
+
+    // Create new rider record with pending status
+    const { data, error } = await supabase
+      .from('riders')
+      .insert({
+        phone,
+        name,
+        status:             'pending',
+        id_photo_url:       idPath    || null,
+        license_photo_url:  licPath   || null,
+        selfie_url:         selfiePath || null
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    console.log(`🏍️ New rider application: ${name} (${phone})`);
+    res.json({ success: true, status: 'pending' });
+
+  } catch (err) {
+    console.error('Rider register error:', err.message);
+    res.status(500).json({ error: 'Could not save application' });
+  }
+});
+
+
 // POST /api/rider/login
 // Called when rider enters their phone number
 // Returns rider data if approved, error if pending/suspended
@@ -128,6 +181,7 @@ router.post('/location', async (req, res) => {
 
 // GET /api/rider/active-order
 // Returns the rider's current active order if any
+// Used to restore state if rider refreshes the page mid-delivery
 router.get('/active-order', async (req, res) => {
   try {
     const phone = req.headers['x-user-phone'];
@@ -143,6 +197,7 @@ router.get('/active-order', async (req, res) => {
       .in('status', ['rider_assigned', 'picked_up'])
       .single();
 
+       // PGRST116 = no rows found — that's fine, just means no active order
     if (error && error.code !== 'PGRST116') throw error;
 
     res.json({ order: data || null });
@@ -155,58 +210,3 @@ router.get('/active-order', async (req, res) => {
 
 
 export default router;
-
-
-// POST /api/rider/register
-// Called when rider submits their application
-// Saves rider to database with status 'pending'
-
-router.post('/register', async (req, res) => {
-  try {
-    const { phone, name } = req.body;
-
-    if (!phone || !name) {
-      return res.status(400).json({ error: 'Phone and name are required' });
-    }
-
-    // Check if rider already exists
-    const { data: existing } = await supabase
-      .from('riders')
-      .select('id, status')
-      .eq('phone', phone)
-      .single();
-
-    if (existing) {
-      return res.json({ 
-        success: true, 
-        status: existing.status,
-        message: 'Application already submitted'
-      });
-    }
-
-    // Create new rider with pending status
-    const { idPath, licPath, selfiePath } = req.body;
-    const { data, error } = await supabase
-      .from('riders')
-      .insert({
-        phone,
-        name,
-        status:            'pending',
-        id_photo_url:      idPath || null,
-        license_photo_url: licPath || null,
-        selfie_url:        selfiePath || null
-    })
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    console.log(`🏍️ New rider application: ${name} (${phone})`);
-
-    res.json({ success: true, status: 'pending' });
-
-  } catch (err) {
-    console.error('Rider register error:', err.message);
-    res.status(500).json({ error: 'Could not save application' });
-  }
-});

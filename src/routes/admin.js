@@ -10,6 +10,7 @@
 
 import express from 'express';
 import supabase from '../services/supabase.js';
+import { sendRiderApproved, sendRiderRejected, sendRiderSuspended } from '../services/sms.js';
 
 const router = express.Router();
 
@@ -123,9 +124,21 @@ router.post('/riders/approve', async (req, res) => {
 
     if (error) throw error;
 
-    // TODO: Send SMS to rider notifying them they are approved
-    console.log(`✅ Rider ${phone} approved`);
+   
+    // Fetch rider name for the SMS
+    const { data: rider } = await supabase
+      .from('riders')
+      .select('name')
+      .eq('phone', phone)
+      .single();
 
+    // Notify rider via SMS
+    sendRiderApproved(phone, rider?.name || 'Rider')
+      .then(r => {
+        if (!r.success) console.warn(`⚠️  Approval SMS failed for ${phone}:`, r.error);
+      });
+
+    console.log(`✅ Rider ${phone} approved - SMS sent`);
     res.json({ success: true });
 
   } catch (err) {
@@ -145,6 +158,15 @@ router.post('/riders/suspend', async (req, res) => {
       return res.status(400).json({ error: 'Phone required' });
     }
 
+       // Fetch name and CURRENT status BEFORE updating
+    // so we can correctly detect if this is a rejection (was pending)
+    // or a suspension (was approved)
+    const { data: rider } = await supabase
+      .from('riders')
+      .select('name, status')
+      .eq('phone', phone)
+      .single();
+
     const { error } = await supabase
       .from('riders')
       .update({ status: 'suspended' })
@@ -152,7 +174,21 @@ router.post('/riders/suspend', async (req, res) => {
 
     if (error) throw error;
 
-    console.log(`🚫 Rider ${phone} suspended`);
+    // Send appropriate SMS based on whether this is a rejection or suspension
+    const wasPending = rider?.status === 'pending';
+    if (wasPending) {
+      sendRiderRejected(phone, rider?.name || 'Rider')
+        .then(r => {
+          if (!r.success) console.warn(`⚠️  Rejection SMS failed for ${phone}:`, r.error);
+        });
+    } else {
+      sendRiderSuspended(phone)
+        .then(r => {
+          if (!r.success) console.warn(`⚠️  Suspension SMS failed for ${phone}:`, r.error);
+        });
+    }
+
+   console.log(`🚫 Rider ${phone} ${wasPending ? 'rejected' : 'suspended'} — SMS sent`);
 
     res.json({ success: true });
 

@@ -1,13 +1,36 @@
 // src/routes/kitchen.js
 
 // Routes:
+//   POST /api/kitchen/verify              — verify kitchen passcode
 //   GET  /api/kitchen/orders              — get all active orders
-//   POST /api/kitchen/orders/:id/status   — update order status
+//   POST /api/kitchen/orders/:id/status   — update order status (triggers dispatch on 'ready')
 
 import express from 'express';
 import supabase from '../services/supabase.js';
+import { dispatchOrder } from '../services/dispatch.js';
 
 const router = express.Router();
+// POST /api/kitchen/verify
+// Kitchen staff enter a passcode to access the order board
+// Passcode is set in KITCHEN_CODE environment variable on Railway
+// Called by authSubmit() in the frontend when role === 'kitchen'
+
+router.post('/verify', (req, res) => {
+  const { code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ ok: false, error: 'Passcode required' });
+  }
+
+  if (code !== process.env.KITCHEN_CODE) {
+    console.log(`🔐 Wrong kitchen passcode attempt`);
+    return res.json({ ok: false });
+  }
+
+  console.log(`✅ Kitchen access granted`);
+  res.json({ ok: true });
+});
+
 
 // GET /api/kitchen/orders
 // Returns all orders that kitchen needs to see:
@@ -58,6 +81,22 @@ router.post('/orders/:id/status', async (req, res) => {
 
     // Log for visibility in terminal
     console.log(`🍳 Order ${id} status → ${status}`);
+
+    // When kitchen marks an order ready, immediately dispatch to available riders
+    // dispatchOrder is fire-and-forget — we respond to kitchen instantly
+    // and let dispatch run in the background
+    if (status === 'ready') {
+      dispatchOrder(parseInt(id))
+        .then(result => {
+          if (result.noRiders) {
+            console.warn(`⚠️  Order ${id} ready but no riders online — will retry in 3 mins`);
+          } else if (result.success) {
+            console.log(`📡 Order ${id} dispatched to ${result.riderCount} rider(s)`);
+          } else {
+            console.error(`❌ Dispatch failed for order ${id}:`, result.error);
+          }
+        });
+    }
 
     res.json({ success: true, status });
 

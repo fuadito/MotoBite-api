@@ -2,7 +2,9 @@
 
 // Routes:
 //   POST /api/orders                    — create new order
+//   GET  /api/orders/history            — customer order history
 //   GET  /api/orders/:id                — get order status
+//   POST /api/orders/:id/accept         — rider accepts order
 //   POST /api/orders/:id/pay            — trigger M-Pesa STK push
 //   POST /api/orders/:id/rate           — submit food + rider rating
 //   POST /api/orders/:id/collected      — rider collected from KFC
@@ -10,7 +12,9 @@
 
 
 import express from 'express';
+import bcrypt  from 'bcrypt';
 import supabase from '../services/supabase.js';
+import { sendDeliveryPIN } from '../services/sms.js';
 
 const router = express.Router();
 
@@ -35,6 +39,11 @@ router.post('/', async (req, res) => {
     const food_amount = items.reduce((sum, i) => sum + i.price, 0);
     const delivery_pin = generatePIN();
 
+       // Hash PIN — plain text is NEVER stored in the DB
+    const pinHash      = await bcrypt.hash(delivery_pin, 10);
+    const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hrs
+
+
     const { data, error } = await supabase
       .from('orders')
       .insert({
@@ -44,7 +53,10 @@ router.post('/', async (req, res) => {
         food_amount:     food_amount,
         customer_lat:    location?.lat || null,
         customer_lng:    location?.lng || null,
-        delivery_pin:    delivery_pin,
+        location:       location || null,
+        pin_hash:       pinHash,
+        pin_expires_at: pinExpiresAt,
+        pin_attempts:   0,
         status:          'pending'
       })
       .select()
@@ -52,16 +64,19 @@ router.post('/', async (req, res) => {
 
     if (error) throw error;
 
-     // TODO: Send delivery PIN to customer via SMS (Africa's Talking)
-    // We will wire this up when AT credentials are ready
+     // Send delivery PIN to customer via SMS (Africa's Talking)
+    // sendDeliveryPIN is fire-and-forget — we don't block the response on it
 
-     console.log(`📱 PIN for order ${data.order_number}: ${delivery_pin}`);
+      sendDeliveryPIN(phone, data.order_number, delivery_pin)
+      .then(r => {
+        if (!r.success) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}:`, r.error);
+      });
 
-    res.json({ 
+    res.json({
       id:           data.id,
       order_number: data.order_number,
-      status:       data.status,
-      delivery_pin: delivery_pin
+      status:       data.status
+      // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
 
   } catch (err) {
@@ -69,6 +84,40 @@ router.post('/', async (req, res) => {
     res.status(500).json({ error: 'Could not create order' });
   }
 });
+
+
+
+// GET /api/orders/history
+// Returns last 20 orders for the logged-in customer
+// Called by loadHistory() in the frontend
+// NOTE: Must be defined BEFORE /:id to avoid Express treating 'history' as an id
+
+router.get('/history', async (req, res) => {
+  try {
+    const phone = req.headers['x-user-phone'];
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number required' });
+    }
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, order_number, status, food_amount, items, created_at, customer_area')
+      .eq('customer_phone', phone)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (error) throw error;
+
+    res.json({ orders: data || [] });
+
+  } catch (err) {
+    console.error('Order history error:', err.message);
+    res.status(500).json({ error: 'Could not fetch order history' });
+  }
+});
+
+
 
 // GET /api/orders/:id
 // Returns full order details including status
@@ -101,6 +150,48 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+
+
+// POST /api/orders/:id/accept
+// Rider accepts a dispatched order
+// Called by acceptOrder() in the frontend
+// Sets status to rider_assigned and records the rider's phone
+
+router.post('/:id/accept', async (req, res) => {
+  try {
+    const { id }  = req.params;
+    const phone   = req.headers['x-user-phone'];
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone required' });
+    }
+
+    // Guard: only assign if not already taken by another rider
+    const { data: existing } = await supabase
+      .from('orders')
+      .select('rider_phone, status')
+      .eq('id', id)
+      .single();
+
+    if (existing?.rider_phone && existing.rider_phone !== phone) {
+      return res.status(409).json({ error: 'Order already accepted by another rider' });
+    }
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: 'rider_assigned', rider_phone: phone })
+      .eq('id', id);
+
+    if (error) throw error;
+
+    console.log(`🏍️  Order ${id} accepted by rider ${phone}`);
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Accept order error:', err.message);
+    res.status(500).json({ error: 'Could not accept order' });
+  }
+});
 
 // POST /api/orders/:id/pay
 // Triggers M-Pesa STK Push to customer's phone
@@ -208,10 +299,11 @@ router.post('/:id/confirm-pin', async (req, res) => {
     const { id } = req.params;
     const { pin } = req.body;
 
-    // Get the order and check PIN
+    // Get the order — fetch all fields needed for security checks
+    // delivery_pin is NOT selected — we compare against pin_hash only
     const { data: order, error } = await supabase
       .from('orders')
-      .select('delivery_pin, rider_phone')
+      .select('pin_hash, pin_expires_at, pin_attempts, status, rider_phone')
       .eq('id', id)
       .single();
 
@@ -219,23 +311,54 @@ router.post('/:id/confirm-pin', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    if (order.delivery_pin !== pin) {
-      return res.status(400).json({ error: 'Wrong PIN' });
+// Already delivered — block replay
+    if (order.status === 'delivered') {
+      return res.json(null);
     }
 
-    // PIN correct — mark as delivered
+    // Lockout after 3 wrong attempts
+    if (order.pin_attempts >= 3) {
+      console.warn(`🔒 Order ${id} PIN locked — too many wrong attempts`);
+      return res.status(403).json({ error: 'Too many attempts. Contact KFC Narok.' });
+    }
+
+    // Check expiry
+    if (new Date() > new Date(order.pin_expires_at)) {
+      console.warn(`⏰ Order ${id} PIN expired`);
+      return res.status(403).json({ error: 'PIN has expired. Contact KFC Narok.' });
+    }
+
+     // Compare against hash
+    const match = await bcrypt.compare(pin, order.pin_hash);
+
+    if (!match) {
+      await supabase
+        .from('orders')
+        .update({ pin_attempts: order.pin_attempts + 1 })
+        .eq('id', id);
+
+      console.log(`❌ Wrong PIN for order ${id} — attempt ${order.pin_attempts + 1}/3`);
+      return res.json(null); // frontend shows red shake — same response as wrong PIN
+    }
+
+     // ✅ Correct — mark delivered and wipe hash
     await supabase
       .from('orders')
-      .update({ status: 'delivered' })
+      .update({
+        status:       'delivered',
+        delivered_at:  new Date().toISOString(),
+        pin_hash:      null,  // wiped — can never be reused
+        pin_attempts:  0
+      })
       .eq('id', id);
 
-    // Update rider trip count
-    if (order.rider_phone) {
-      await supabase.rpc('increment_rider_trips', { 
-        rider_phone: order.rider_phone 
+        if (order.rider_phone) {
+      await supabase.rpc('increment_rider_trips', {
+        rider_phone: order.rider_phone
       });
     }
 
+    console.log(`✅ Order ${id} delivered — PIN confirmed`);
     res.json({ success: true });
 
   } catch (err) {
