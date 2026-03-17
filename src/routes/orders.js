@@ -54,6 +54,7 @@ router.post('/', async (req, res) => {
         customer_lat:    location?.lat || null,
         customer_lng:    location?.lng || null,
         location:       location || null,
+        customer_area:  location?.area || 'Narok Town',
         pin_hash:       pinHash,
         pin_expires_at: pinExpiresAt,
         pin_attempts:   0,
