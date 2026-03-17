@@ -4,29 +4,50 @@
 //
 // Uses these Railway environment variables:
 //   AT_API_KEY    — your Africa's Talking API key
-//   AT_USERNAME   — your Africa's Talking username (e.g. 'kfcnarok' or 'sandbox')
-//   AT_SENDER_ID  — your registered sender name e.g. 'KFCNAROK' (optional — remove if not approved yet)
+//   AT_USERNAME   — your AT username (sandbox during testing, your username when live)
+//   AT_SENDER_ID  — optional registered sender ID e.g. 'KFCNAROK'
 //
-// To switch between sandbox and live:
-//   Sandbox  → AT_USERNAME=sandbox  + AT_API_KEY=your-sandbox-key
-//   Live     → AT_USERNAME=kfcnarok + AT_API_KEY=your-live-key
-
-
-
+// Sandbox testing:
+//   AT_USERNAME=sandbox  +  AT_API_KEY=<your sandbox key from AT dashboard>
+//   Messages won't reach real phones but the API returns success responses
+//
+// Go live:
+//   AT_USERNAME=<your real AT username>  +  AT_API_KEY=<your live API key>
+ 
+ 
 import AfricasTalking from 'africastalking';
-
-// Initialise the AT client once — reused across all sends
-const at = AfricasTalking({
-  apiKey:   process.env.AT_API_KEY,
-  username: process.env.AT_USERNAME
-});
-
-const sms = at.SMS;
-
-// ─── HELPER ─────────────────────────────────────────────────────────────────
-// Formats any Kenyan number to the +254XXXXXXXXX format AT requires
-// Accepts: 07XXXXXXXX, 7XXXXXXXX, 2547XXXXXXXX, +2547XXXXXXXX
-
+ 
+// Lazy initialization — client is created on first use, not at module load.
+// This prevents a silent startup crash if env vars aren't set yet.
+let _sms = null;
+ 
+function getSMS() {
+  if (_sms) return _sms;
+ 
+  const apiKey   = process.env.AT_API_KEY;
+  const username = process.env.AT_USERNAME;
+ 
+  if (!apiKey || !username) {
+    console.error('❌ SMS not configured — AT_API_KEY or AT_USERNAME missing from Railway variables');
+    return null;
+  }
+ 
+  try {
+    const at = AfricasTalking({ apiKey, username });
+    _sms = at.SMS;
+    console.log(`📱 Africa's Talking SMS initialised (username: ${username})`);
+    return _sms;
+  } catch (err) {
+    console.error('❌ Africa\'s Talking init failed:', err.message);
+    return null;
+  }
+}
+ 
+ 
+// ─── HELPER — phone formatter ─────────────────────────────────────────────────
+// Converts any Kenyan number to +254XXXXXXXXX format AT requires
+// Accepts: 07XXXXXXXX  /  7XXXXXXXX  /  2547XXXXXXXX  /  +2547XXXXXXXX
+ 
 function formatPhone(phone) {
   const digits = String(phone).replace(/\D/g, '');
   if (digits.startsWith('254')) return `+${digits}`;
@@ -34,93 +55,91 @@ function formatPhone(phone) {
   if (digits.length === 9)      return `+254${digits}`;
   return `+${digits}`;
 }
-
-
-// ─── CORE SEND ───────────────────────────────────────────────────────────────
-// All SMS calls go through here
+ 
+ 
+// ─── CORE SEND ────────────────────────────────────────────────────────────────
+// All SMS calls pass through here
 // Returns { success: true } or { success: false, error: '...' }
-
+ 
 async function sendSMS(phone, message) {
+  const sms = getSMS();
+ 
+  if (!sms) {
+    // SMS not configured — log clearly so it shows up in Railway logs
+    console.warn(`📵 SMS skipped (not configured) → ${formatPhone(phone)}: "${message.slice(0, 40)}..."`);
+    return { success: false, error: 'SMS service not configured' };
+  }
+ 
   try {
     const to = formatPhone(phone);
-
-    const options = {
-      to:      [to],
-      message: message,
-    };
-
-    // Only attach sender ID if one is configured
-    // (Sender IDs need to be registered with AT — remove this line
-    //  and use sandbox or shortcode until yours is approved)
+ 
+    const options = { to: [to], message };
+ 
+    // Attach sender ID only if configured
+    // Remove AT_SENDER_ID from Railway vars if not yet approved by AT
     if (process.env.AT_SENDER_ID) {
       options.from = process.env.AT_SENDER_ID;
     }
-
-    const result = await sms.send(options);
+ 
+    console.log(`📤 Sending SMS to ${to}...`);
+    const result    = await sms.send(options);
     const recipient = result.SMSMessageData?.Recipients?.[0];
-
+ 
     if (recipient?.status === 'Success') {
-      console.log(`📱 SMS sent to ${to} — cost: ${recipient.cost}`);
+      console.log(`✅ SMS delivered to ${to} — cost: ${recipient.cost}`);
       return { success: true };
-    } else {
-      console.error(`📵 SMS failed to ${to}:`, recipient?.status);
-      return { success: false, error: recipient?.status };
     }
-
+ 
+    // AT returned a non-success status — log the full recipient object so we can debug
+    console.error(`❌ SMS failed to ${to} — status: ${recipient?.status}`, JSON.stringify(recipient));
+    return { success: false, error: recipient?.status || 'Unknown AT error' };
+ 
   } catch (err) {
-    console.error('SMS send error:', err.message);
+    console.error(`❌ SMS exception for ${formatPhone(phone)}:`, err.message);
     return { success: false, error: err.message };
   }
 }
-
-
-// ─── MESSAGE TEMPLATES ───────────────────────────────────────────────────────
-// One function per SMS type — keeps messages consistent and easy to edit
-
-
-// Sent to customer immediately after they place an order
-// pin is the plain 4-digit number (generated before hashing)
-
+ 
+ 
+// ─── MESSAGE TEMPLATES ────────────────────────────────────────────────────────
+ 
+// Sent to customer immediately after placing an order
 export async function sendDeliveryPIN(phone, orderNumber, pin) {
   const message =
     `KFC Narok - Order ${orderNumber}\n` +
     `Your delivery PIN is: ${pin}\n` +
     `Share this PIN with your rider ONLY after you receive your food.\n` +
     `Do not share it before delivery.`;
-
+ 
   return sendSMS(phone, message);
 }
-
-
+ 
 // Sent to rider when admin approves their application
-
 export async function sendRiderApproved(phone, name) {
   const message =
     `Habari ${name}! Your KFC Narok rider account has been APPROVED. ` +
     `Open the app, select Rider and enter your phone number to start earning. ` +
-    `Welcome to the team! 🏍️`;
-
+    `Welcome to the team!`;
+ 
   return sendSMS(phone, message);
 }
-
-
+ 
 // Sent to rider when admin rejects their application
-
 export async function sendRiderRejected(phone, name) {
   const message =
     `Hi ${name}, unfortunately your KFC Narok rider application was not approved at this time. ` +
     `For more information call: 0702 923 826.`;
-
+ 
   return sendSMS(phone, message);
 }
-
-
+ 
 // Sent to rider when their account is suspended
-
 export async function sendRiderSuspended(phone) {
   const message =
     `Your KFC Narok rider account has been suspended. ` +
     `Contact us on 0702 923 826 if you believe this is a mistake.`;
-
+ 
   return sendSMS(phone, message);
 }
+ 
+ 
