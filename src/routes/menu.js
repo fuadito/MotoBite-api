@@ -23,9 +23,8 @@ router.get('/', async (req, res) => {
     const { data, error } = await supabase
       .from('menu_items')
       .select('*')
-      .eq('available', true)
-      .order('category',   { ascending: true })
-      .order('sort_order', { ascending: true });
+      .order('category', { ascending: true })
+      .order('id', { ascending: true });
 
     if (error) throw error;
 
@@ -76,7 +75,7 @@ router.patch('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { name, category, price, description, img } = req.body;
+    const { name, category, price, description, img, sort_order } = req.body;
 
     // Validate required fields
     if (!name || !category || !price) {
@@ -89,8 +88,9 @@ router.post('/', async (req, res) => {
         name,
         category,
         price:       parseInt(price),
-        description: description || null,
-        img:         img || null,
+        description: description  || null,
+        img:         img          || null,
+        sort_order:  sort_order   || 999,
         available:   true
       })
       .select()
