@@ -23,8 +23,9 @@ router.get('/', async (req, res) => {
     const { data, error } = await supabase
       .from('menu_items')
       .select('*')
-      .order('category', { ascending: true })
-      .order('id', { ascending: true });
+      .eq('available', true)
+      .order('category',   { ascending: true })
+      .order('sort_order', { ascending: true });
 
     if (error) throw error;
 
