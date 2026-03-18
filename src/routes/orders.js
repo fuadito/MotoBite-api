@@ -73,10 +73,32 @@ router.post('/', async (req, res) => {
         if (!r.success) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}:`, r.error);
       });
 
+      // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
+    // Fire-and-forget: don't block the order response waiting for Daraja
+    let stkSent = false;
+    try {
+      const stkRes = await fetch(
+        `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/mpesa/stk-push`,
+        {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ orderId: data.id, phone, amount: food_amount })
+        }
+      );
+      const stkData = await stkRes.json();
+      stkSent = !!stkData.success;
+      if (stkSent)         console.log(`💳 STK push sent for order ${data.order_number}`);
+      else if (stkData.pending) console.log(`💳 STK skipped — credentials pending`);
+      else                 console.warn(`⚠️  STK push failed for order ${data.order_number}`);
+    } catch(e) {
+      console.warn(`⚠️  STK push error for order ${data.order_number}:`, e.message);
+    }
+
     res.json({
       id:           data.id,
       order_number: data.order_number,
-      status:       data.status
+      status:       data.status,
+      stkSent:      stkSent   // tells frontend whether to show STK prompt UI
       // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
 
