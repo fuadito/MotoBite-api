@@ -199,5 +199,31 @@ router.post('/riders/suspend', async (req, res) => {
 });
 
 
+// POST /api/admin/orders/:id/mark-paid
+// Admin manually confirms payment — moves order from pending to paid
+router.post('/:id/mark-paid', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        status:               'paid',
+        payment_confirmed:    true,
+        payment_confirmed_at: new Date().toISOString(),
+        paid_at:              new Date().toISOString()
+      })
+      .eq('id', id)
+      .eq('status', 'pending'); // only update if still pending — prevents double-confirm
+
+    if (error) throw error;
+    console.log(`✅ Admin marked order ${id} as paid`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Mark paid error:', err.message);
+    res.status(500).json({ error: 'Could not mark as paid' });
+  }
+});
+
+
 export default router;
 
