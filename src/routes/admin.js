@@ -11,8 +11,13 @@
 import express from 'express';
 import supabase from '../services/supabase.js';
 import { sendRiderApproved, sendRiderRejected, sendRiderSuspended } from '../services/sms.js';
+import { authenticate } from '../middleware/auth.js';
+import { adminOnly } from '../middleware/adminOnly.js';
 
 const router = express.Router();
+
+// ALL admin routes require authentication + admin role
+router.use(authenticate, adminOnly);
 
 // GET /api/admin/stats
 // Returns 4 metrics for the admin dashboard overview

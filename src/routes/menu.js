@@ -10,6 +10,8 @@
 
 import express from 'express';
 import supabase from '../services/supabase.js';
+import { authenticate } from '../middleware/auth.js';
+import { adminOnly } from '../middleware/adminOnly.js';
 
 const router = express.Router();
 
@@ -48,7 +50,7 @@ router.get('/', async (req, res) => {
 // Toggle item available or hidden
 // Called by toggleMenuItem() in admin frontend
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const { available } = req.body;
@@ -74,7 +76,7 @@ router.patch('/:id', async (req, res) => {
 // Add a brand new menu item
 // Called from admin panel when introducing a new item
 
-router.post('/', async (req, res) => {
+router.post('/', authenticate, adminOnly, async (req, res) => {
   try {
     const { name, category, price, description, img, sort_order } = req.body;
 
@@ -113,7 +115,7 @@ router.post('/', async (req, res) => {
 // Edit an existing menu item — name, price, description, image
 // Called from admin panel
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, category, price, description, img } = req.body;
@@ -144,7 +146,7 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/menu/:id
 // Permanently delete a menu item
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 

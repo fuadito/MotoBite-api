@@ -51,6 +51,9 @@ import mpesaRoutes    from './routes/mpesa.js';
 import menuRoutes     from './routes/menu.js';
 import { redispatchStaleOrders } from './services/dispatch.js';
 
+// Auth routes — NO middleware (login endpoints)
+app.use('/api/auth', authRoutes);
+
 app.use('/api/customer', customerRoutes);
 app.use('/api/orders',   orderRoutes);
 app.use('/api/rider',    riderRoutes);
