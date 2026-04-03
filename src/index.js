@@ -1,3 +1,4 @@
+import authRoutes     from './routes/auth.js';
 // src/index.js — KFC NAROK BACKEND ENTRY POINT
 
 
