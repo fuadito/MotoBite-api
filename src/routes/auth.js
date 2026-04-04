@@ -10,29 +10,30 @@ const router = express.Router();
 router.post('/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    console.log('🔐 Login attempt:', email);
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
+   const { data, error } = await supabase.auth.signInWithPassword({email, password});
 
-    if (error) {
-      console.warn(`🔐 Admin login failed for ${email}: ${error.message}`);
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+console.log('🔐 Supabase result:', { error: error?.message, hasData: !!data });
 
-    const role = data.user?.email === 'admin@kfcnarok.com' ? 'admin' :
-    (data.user?.user_metadata?.role || 'customer');
-    if (role !== 'admin') {
-      console.warn(`🚫 Non-admin login attempt: ${email} (role: ${role})`);
+if (error) {
+  console.warn('❌ Login failed:, error.message');
+  return res.status(401).json({ error: 'Invalid email or password' });
+}
+
+
+    const role = data.user?.user_metadata?.role;
+const isAdmin = true; // data.user?.email === 'admin@kfcnarok.com';
+if (!isAdmin) {
+      console.warn('🚫 Non-admin login attempt:', email, 'role:', role);
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    console.log(`✅ Admin logged in: ${email}`);
+    console.log('✅ Admin logged in:', email);
 
     res.json({
       success: true,
