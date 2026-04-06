@@ -209,11 +209,18 @@ router.post('/riders/suspend', async (req, res) => {
 router.post('/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
+    const axios = require('axios');
+    
+    // 1. Generate 4-digit security PIN
+    const security_pin = Math.floor(1000 + Math.random() * 9000).toString();
+    
+    // 2. Update order status in Supabase
     const { data, error } = await supabase
       .from('orders')
       .update({
-        status:               'paid',
-        paid_at:              new Date().toISOString()
+        status: 'paid',
+        security_pin: security_pin,
+        paid_at: new Date().toISOString()
       })
       .eq('id', id)
       .select()
@@ -221,15 +228,53 @@ router.post('/:id/mark-paid', async (req, res) => {
 
     if (error) throw error;
 
-    console.log(`✅ Order ${data.order_number} manually marked as paid by admin`);
-    res.json({ success: true, order:data });
+    console.log(`✅ Order ${data.order_number} marked as paid. PIN: ${security_pin}`);
     
+    // 3. Send PIN via Africa's Talking SMS
+    const AT_API_KEY = process.env.AFRICAS_TALKING_API_KEY || 'YOUR_API_KEY_HERE';
+    const customerPhone = data.customer_phone;
+    
+    if (customerPhone && AT_API_KEY !== 'YOUR_API_KEY_HERE') {
+      try {
+        await axios.post('https://api.africastalking.com/version1/messaging', {
+          username: 'KFCNAROK',
+          to: customerPhone,
+          message: `🔐 KFC Narok: Your delivery PIN is ${security_pin}. Share with your rider ONLY after receiving food.`
+        }, {
+          headers: { 
+            'ApiKey': AT_API_KEY,
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log(`📱 SMS sent to ${customerPhone}`);
+      } catch (smsErr) {
+        console.error('SMS failed:', smsErr.message);
+      }
+    } else {
+      console.log(`📱 SMS skipped - PIN for ${customerPhone}: ${security_pin}`);
+    }
+    
+    // 4. Notify kitchen via Supabase Realtime
+    supabase.channel('kitchen-orders').send({
+      type: 'broadcast',
+      event: 'order_paid',
+      payload: data
+    });
+    
+    // 5. Notify rider channel
+    supabase.channel('rider-dispatch').send({
+      type: 'broadcast',
+      event: 'new_order',
+      payload: data
+    });
+    
+    res.json({ success: true, order: data });
+ 
   } catch (err) {
     console.error('Mark paid error:', err.message);
     res.status(500).json({ error: 'Could not mark as paid' });
   }
 });
-
 
 export default router;
 
