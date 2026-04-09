@@ -14,7 +14,7 @@
 import express from 'express';
 import bcrypt  from 'bcrypt';
 import supabase from '../services/supabase.js';
-import { sendDeliveryPIN } from '../services/sms.js';
+import {sendSMS} from '../services/sms.js';
 
 const router = express.Router();
 
@@ -68,10 +68,16 @@ router.post('/', async (req, res) => {
      // Send delivery PIN to customer via SMS (Africa's Talking)
     // sendDeliveryPIN is fire-and-forget — we don't block the response on it
 
-      sendDeliveryPIN(phone, data.order_number, delivery_pin)
-      .then(r => {
-        if (!r.success) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}:`, r.error);
-      });
+
+// After order is inserted into Supabase
+const pin = Math.floor(1000 + Math.random() * 9000).toString();
+
+await supabase.from('orders').update({ delivery_pin: pin }).eq('id', data.id);
+
+// Send PIN to customer
+await sendSMS(req.body.phone || data.customer_phone,
+  `KFC Narok Order ${data.order_number}: Your delivery PIN is ${pin}. Share it with your rider ONLY after receiving your food.`
+);
 
       // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
     // Fire-and-forget: don't block the order response waiting for Daraja
