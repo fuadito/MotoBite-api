@@ -1,104 +1,83 @@
 // src/routes/auth.js
 // Authentication routes using Supabase Auth
+// Admin signs in with email/password on the office computer
+// Customers and riders use phone-based OTP via Africa's Talking
 
 import express from 'express';
 import supabase from '../services/supabase.js';
+import axios from 'axios';
 
 const router = express.Router();
+
+
+// In-memory OTP store (use Redis in production)
+const otpStore = new Map();
+
+function generatePIN() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 // POST /api/auth/admin/login
 router.post('/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log('🔐 Login attempt:', email);
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-   const { data, error } = await supabase.auth.signInWithPassword({email, password});
-
-console.log('🔐 Supabase result:', { error: error?.message, hasData: !!data });
-
-if (error) {
-  console.warn('❌ Login failed:, error.message');
-  return res.status(401).json({ error: 'Invalid email or password' });
-}
-
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return res.status(401).json({ error: 'Invalid email or password' });
 
     const role = data.user?.user_metadata?.role;
-const isAdmin = true; // data.user?.email === 'admin@kfcnarok.com';
-if (!isAdmin) {
-      console.warn('🚫 Non-admin login attempt:', email, 'role:', role);
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    if (role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
 
-    console.log('✅ Admin logged in:', email);
-
-    res.json({
-      success: true,
-      token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-      user: {
-        id: data.user.id,
-        email: data.user.email,
-        role: role
-      }
-    });
-
-  } catch (err) {
-    console.error('Admin login error:', err.message);
-    res.status(500).json({ error: 'Login failed' });
-  }
+    res.json({ success: true, token: data.session.access_token, refresh_token: data.session.refresh_token, user: { id: data.user.id, email: data.user.email, role } });
+  } catch (err) { res.status(500).json({ error: 'Login failed' }); }
 });
 
 // POST /api/auth/admin/refresh
 router.post('/admin/refresh', async (req, res) => {
   try {
     const { refresh_token } = req.body;
+    if (!refresh_token) return res.status(400).json({ error: 'Refresh token required' });
 
-    if (!refresh_token) {
-      return res.status(400).json({ error: 'Refresh token required' });
-    }
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+    if (error) return res.status(401).json({ error: 'Invalid refresh token' });
 
-    const { data, error } = await supabase.auth.refreshSession({
-      refresh_token
-    });
-
-    if (error) {
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
-
-    res.json({
-      success: true,
-      token: data.session.access_token,
-      refresh_token: data.session.refresh_token
-    });
-
-  } catch (err) {
-    console.error('Token refresh error:', err.message);
-    res.status(500).json({ error: 'Refresh failed' });
-  }
+    res.json({ success: true, token: data.session.access_token, refresh_token: data.session.refresh_token });
+  } catch (err) { res.status(500).json({ error: 'Refresh failed' }); }
 });
 
-// POST /api/auth/send-otp (placeholder for future phone auth)
+// POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   try {
     const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'Phone number required' });
 
-    if (!phone) {
-      return res.status(400).json({ error: 'Phone number required' });
-    }
+    const normalizedPhone = phone.replace(/^\+/, '');
+    const pin = generatePIN();
+    
+    otpStore.set(normalizedPhone, { pin, expiresAt: Date.now() + 5 * 60 * 1000 });
+    await sendSMS(normalizedPhone, `Your verification code is ${pin}. Valid for 5 minutes.`);
+    
+    console.log(`📱 OTP sent to ${normalizedPhone}: ${pin}`);
+    res.json({ success: true, message: 'Verification code sent' });
+  } catch (err) { res.status(500).json({ error: 'Could not send OTP' }); }
+});
 
-    res.json({
-      success: false,
-      message: 'Phone auth coming soon — continue using phone number login for now'
-    });
+// POST /api/auth/verify-otp
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { phone, pin } = req.body;
+    if (!phone || !pin) return res.status(400).json({ error: 'Phone and PIN required' });
 
-  } catch (err) {
-    console.error('Send OTP error:', err.message);
-    res.status(500).json({ error: 'Could not send OTP' });
-  }
+    const normalizedPhone = phone.replace(/^\+/, '');
+    const stored = otpStore.get(normalizedPhone);
+    if (!stored) return res.status(400).json({ error: 'No OTP sent to this phone' });
+    if (Date.now() > stored.expiresAt) { otpStore.delete(normalizedPhone); return res.status(400).json({ error: 'OTP expired' }); }
+    if (stored.pin !== pin) return res.status(401).json({ error: 'Invalid verification code' });
+
+    otpStore.delete(normalizedPhone);
+    res.json({ success: true, message: 'Phone verified successfully', phone: normalizedPhone });
+  } catch (err) { res.status(500).json({ error: 'Verification failed' }); }
 });
 
 export default router;

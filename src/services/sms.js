@@ -13,41 +13,23 @@
 //
 // Go live:
 //   AT_USERNAME=<your real AT username>  +  AT_API_KEY=<your live API key>
- 
- 
+
+
 import AfricasTalking from 'africastalking';
- 
-// Lazy initialization — client is created on first use, not at module load.
-// This prevents a silent startup crash if env vars aren't set yet.
-let _sms = null;
- 
-function getSMS() {
-  if (_sms) return _sms;
- 
-  const apiKey   = process.env.AT_API_KEY;
-  const username = process.env.AT_USERNAME;
- 
-  if (!apiKey || !username) {
-    console.error('❌ SMS not configured — AT_API_KEY or AT_USERNAME missing from Railway variables');
-    return null;
-  }
- 
-  try {
-    const at = AfricasTalking({ apiKey, username });
-    _sms = at.SMS;
-    console.log(`📱 Africa's Talking SMS initialised (username: ${username})`);
-    return _sms;
-  } catch (err) {
-    console.error('❌ Africa\'s Talking init failed:', err.message);
-    return null;
-  }
-}
- 
- 
+
+// Simple direct init — AT client is created once at module load
+const at = AfricasTalking({
+  apiKey:   process.env.AT_API_KEY,
+  username: process.env.AT_USERNAME
+});
+
+const sms = at.SMS;
+
+
 // ─── HELPER — phone formatter ─────────────────────────────────────────────────
 // Converts any Kenyan number to +254XXXXXXXXX format AT requires
 // Accepts: 07XXXXXXXX  /  7XXXXXXXX  /  2547XXXXXXXX  /  +2547XXXXXXXX
- 
+
 function formatPhone(phone) {
   const digits = String(phone).replace(/\D/g, '');
   if (digits.startsWith('254')) return `+${digits}`;
@@ -55,54 +37,31 @@ function formatPhone(phone) {
   if (digits.length === 9)      return `+254${digits}`;
   return `+${digits}`;
 }
- 
- 
+
+
 // ─── CORE SEND ────────────────────────────────────────────────────────────────
 // All SMS calls pass through here
-// Returns { success: true } or { success: false, error: '...' }
- 
-async function sendSMS(phone, message) {
-  const sms = getSMS();
- 
-  if (!sms) {
-    // SMS not configured — log clearly so it shows up in Railway logs
-    console.warn(`📵 SMS skipped (not configured) → ${formatPhone(phone)}: "${message.slice(0, 40)}..."`);
-    return { success: false, error: 'SMS service not configured' };
-  }
- 
+// Returns the Africa's Talking response object on success, or null on failure
+
+export async function sendSMS(phone, message) {
   try {
-    const to = formatPhone(phone);
- 
-    const options = { to: [to], message };
- 
-    // Attach sender ID only if configured
-    // Remove AT_SENDER_ID from Railway vars if not yet approved by AT
-    if (process.env.AT_SENDER_ID) {
-      options.from = process.env.AT_SENDER_ID;
-    }
- 
-    console.log(`📤 Sending SMS to ${to}...`);
-    const result    = await sms.send(options);
-    const recipient = result.SMSMessageData?.Recipients?.[0];
- 
-    if (recipient?.status === 'Success') {
-      console.log(`✅ SMS delivered to ${to} — cost: ${recipient.cost}`);
-      return { success: true };
-    }
- 
-    // AT returned a non-success status — log the full recipient object so we can debug
-    console.error(`❌ SMS failed to ${to} — status: ${recipient?.status}`, JSON.stringify(recipient));
-    return { success: false, error: recipient?.status || 'Unknown AT error' };
- 
+    const normalized = formatPhone(phone);
+    const result = await sms.send({
+      to:      [normalized],
+      message,
+      from:    process.env.AT_SENDER_ID || 'KFC-NAROK'
+    });
+    console.log(`📱 SMS sent to ${normalized}:`, result);
+    return result;
   } catch (err) {
-    console.error(`❌ SMS exception for ${formatPhone(phone)}:`, err.message);
-    return { success: false, error: err.message };
+    console.error('SMS error:', err.message);
+    return null;
   }
 }
- 
- 
+
+
 // ─── MESSAGE TEMPLATES ────────────────────────────────────────────────────────
- 
+
 // Sent to customer immediately after placing an order
 export async function sendDeliveryPIN(phone, orderNumber, pin) {
   const message =
@@ -110,36 +69,34 @@ export async function sendDeliveryPIN(phone, orderNumber, pin) {
     `Your delivery PIN is: ${pin}\n` +
     `Share this PIN with your rider ONLY after you receive your food.\n` +
     `Do not share it before delivery.`;
- 
+
   return sendSMS(phone, message);
 }
- 
+
 // Sent to rider when admin approves their application
 export async function sendRiderApproved(phone, name) {
   const message =
-    `Habari ${name}! Your KFC Narok rider account has been APPROVED. ` +
-    `Open the app, select Rider and enter your phone number to start earning. ` +
-    `Welcome to the team!`;
- 
+    `Congratulations! Your KFC Narok rider application has been APPROVED. ` +
+    `You can now log in to the app with your phone number and start earning. ` +
+    `Welcome to the team, ${name}!`;
+
   return sendSMS(phone, message);
 }
- 
+
 // Sent to rider when admin rejects their application
 export async function sendRiderRejected(phone, name) {
   const message =
-    `Hi ${name}, unfortunately your KFC Narok rider application was not approved at this time. ` +
-    `For more information call: 0702 923 826.`;
- 
+    `Hi ${name}, your KFC Narok rider application was not successful at this time. ` +
+    `Contact us at 0702 923 826 for more information.`;
+
   return sendSMS(phone, message);
 }
- 
+
 // Sent to rider when their account is suspended
 export async function sendRiderSuspended(phone) {
   const message =
     `Your KFC Narok rider account has been suspended. ` +
     `Contact us on 0702 923 826 if you believe this is a mistake.`;
- 
+
   return sendSMS(phone, message);
 }
- 
- 
