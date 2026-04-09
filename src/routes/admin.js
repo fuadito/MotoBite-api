@@ -237,10 +237,17 @@ router.post('/:id/mark-paid', async (req, res) => {
     }
 
     // Notify kitchen via Supabase Realtime
-    supabase.channel('kitchen-orders').send({
-      type:    'broadcast',
-      event:   'order_paid',
-      payload: data
+    // FIX: must subscribe before sending — same pattern as dispatch.js
+    const channel = supabase.channel('kitchen-orders');
+    await channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await channel.send({
+          type:    'broadcast',
+          event:   'order_paid',
+          payload: data
+        });
+        await channel.unsubscribe();
+      }
     });
 
     res.json({ success: true, order: data });
