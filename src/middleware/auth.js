@@ -10,11 +10,17 @@ export async function authenticate(req, res, next) {
   if (parts.length !== 3) {
     return res.status(401).json({ error: "Invalid token" });
   }
-  
-  const data = JSON.parse(Buffer.from(parts[1], "base64").toString());
-  req.user = { id: data.sub, email: data.email, role: "admin" };
-  console.log("🔐 Auth:", req.user.email);
-  next();
+
+  try {
+    const data = JSON.parse(Buffer.from(parts[1], "base64").toString());
+    // FIX: read role from JWT payload — was hardcoded to "admin" which bypassed all role checks
+    const role = data.user_metadata?.role || data.role || null;
+    req.user = { id: data.sub, email: data.email, role };
+    console.log(`🔐 Auth: ${req.user.email} (role: ${role})`);
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token payload" });
+  }
 }
 
 export async function authenticateOrHeader(req, res, next) {

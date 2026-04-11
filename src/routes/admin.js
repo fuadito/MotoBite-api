@@ -11,6 +11,7 @@
 
 // FIX: top-level ES module import — require() doesn't work with "type":"module"
 import express from 'express';
+import bcrypt  from 'bcrypt';
 import supabase from '../services/supabase.js';
 import { sendRiderApproved, sendRiderRejected, sendRiderSuspended, sendDeliveryPIN } from '../services/sms.js';
 import { authenticate } from '../middleware/auth.js';
@@ -212,12 +213,18 @@ router.post('/:id/mark-paid', async (req, res) => {
 
     const security_pin = Math.floor(1000 + Math.random() * 9000).toString();
 
+    // FIX: hash the PIN — confirm-pin uses bcrypt.compare against pin_hash, not security_pin
+    const pinHash      = await bcrypt.hash(security_pin, 10);
+    const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hrs
+
     const { data, error } = await supabase
       .from('orders')
       .update({
-        status:       'paid',
-        security_pin: security_pin,
-        paid_at:      new Date().toISOString()
+        status:         'paid',
+        pin_hash:       pinHash,       // FIX: store hash for bcrypt.compare in confirm-pin
+        pin_expires_at: pinExpiresAt,  // FIX: without this, expiry check always fails immediately
+        pin_attempts:   0,             // FIX: without this, attempt counter is null
+        paid_at:        new Date().toISOString()
       })
       .eq('id', id)
       .select()

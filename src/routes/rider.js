@@ -213,7 +213,7 @@ router.get('/available', async (req, res) => {
   try {
     const { data } = await supabase
       .from('riders')
-      .select('name, phone, rating, deliveries')
+      .select('name, phone, rating, total_deliveries')
       .eq('status', 'approved')
       .eq('is_available', true)  // ← Fixed
       .order('rating', { ascending: false })

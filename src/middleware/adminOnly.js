@@ -7,9 +7,13 @@ export function adminOnly(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  // TEMP: Allow any logged-in user as admin
-  console.log('Allowing admin access for:', req.user.email);
+  if (req.user.role !== 'admin') {
+    console.warn(`🚫 Unauthorised admin access attempt by: ${req.user.email || req.user.phone}`);
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+ 
   next();
+
   }
 
   

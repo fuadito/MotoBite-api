@@ -30,7 +30,7 @@ function generatePIN() {
 router.post('/', async (req, res) => {
   try {
     const phone = req.headers['x-user-phone'];
-    const { items, notes, location } = req.body;
+    const { items, notes, location, mpesa_reference } = req.body;
 
     if (!phone || !items || !items.length) {
       return res.status(400).json({ error: 'Phone and items are required' });
@@ -54,7 +54,8 @@ router.post('/', async (req, res) => {
         customer_lat:    location?.lat || null,
         customer_lng:    location?.lng || null,
         location:       location || null,
-        customer_area:  location?.area || 'Narok Town',
+        customer_area:  location?.areaName || location?.area || 'Narok Town',
+        mpesa_reference: mpesa_reference || null,
         pin_hash:       pinHash,
         pin_expires_at: pinExpiresAt,
         pin_attempts:   0,
@@ -65,19 +66,12 @@ router.post('/', async (req, res) => {
 
     if (error) throw error;
 
-     // Send delivery PIN to customer via SMS (Africa's Talking)
-    // sendDeliveryPIN is fire-and-forget — we don't block the response on it
-
-
-// After order is inserted into Supabase
-const pin = Math.floor(1000 + Math.random() * 9000).toString();
-
-await supabase.from('orders').update({ delivery_pin: pin }).eq('id', data.id);
-
-// Send PIN to customer
-await sendSMS(req.body.phone || data.customer_phone,
-  `KFC Narok Order ${data.order_number}: Your delivery PIN is ${pin}. Share it with your rider ONLY after receiving your food.`
-);
+    // Send delivery PIN to customer via SMS (Africa's Talking)
+    // delivery_pin (plain text) sent via SMS only — pin_hash stored in DB for verification
+    sendSMS(
+      data.customer_phone,
+      `KFC Narok Order ${data.order_number}: Your delivery PIN is ${delivery_pin}. Share it with your rider ONLY after receiving your food.`
+    ).catch(e => console.warn('PIN SMS failed:', e.message));
 
       // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
     // Fire-and-forget: don't block the order response waiting for Daraja
@@ -206,14 +200,27 @@ router.post('/:id/accept', async (req, res) => {
       return res.status(409).json({ error: 'Order already accepted by another rider' });
     }
 
+    // Fetch rider name so it shows on the customer tracking screen
+    const { data: riderRow } = await supabase
+      .from('riders')
+      .select('name, rating')
+      .eq('phone', phone)
+      .single();
+
     const { error } = await supabase
       .from('orders')
-      .update({ status: 'rider_assigned', rider_phone: phone })
+      .update({
+        status: 'rider_assigned',
+        rider_phone: phone,
+        rider_name: riderRow?.name || null,
+        rider_rating: riderRow?.rating || null,
+        assigned_at: new Date().toISOString()
+      })
       .eq('id', id);
 
     if (error) throw error;
 
-    console.log(`🏍️  Order ${id} accepted by rider ${phone}`);
+    console.log(`🏍️  Order ${id} accepted by rider ${phone} (${riderRow?.name})`);
     res.json({ success: true });
 
   } catch (err) {
@@ -357,7 +364,12 @@ router.post('/:id/confirm-pin', async (req, res) => {
       return res.status(403).json({ error: 'PIN has expired. Contact KFC Narok.' });
     }
 
-     // Compare against hash
+     // Guard: pin_hash wiped after delivery — reject immediately
+    if (!order.pin_hash) {
+      return res.json(null);
+    }
+
+    // Compare against hash
     const match = await bcrypt.compare(pin, order.pin_hash);
 
     if (!match) {

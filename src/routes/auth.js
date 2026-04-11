@@ -5,7 +5,7 @@
 
 import express from 'express';
 import supabase from '../services/supabase.js';
-import axios from 'axios';
+import { sendSMS } from '../services/sms.js';
 
 const router = express.Router();
 
@@ -58,7 +58,7 @@ router.post('/send-otp', async (req, res) => {
     otpStore.set(normalizedPhone, { pin, expiresAt: Date.now() + 5 * 60 * 1000 });
     await sendSMS(normalizedPhone, `Your verification code is ${pin}. Valid for 5 minutes.`);
     
-    console.log(`📱 OTP sent to ${normalizedPhone}: ${pin}`);
+    console.log(`📱 OTP sent to ${normalizedPhone}`);
     res.json({ success: true, message: 'Verification code sent' });
   } catch (err) { res.status(500).json({ error: 'Could not send OTP' }); }
 });
