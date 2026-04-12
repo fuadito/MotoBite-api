@@ -14,14 +14,9 @@
 import express from 'express';
 import bcrypt  from 'bcrypt';
 import supabase from '../services/supabase.js';
-import {sendSMS} from '../services/sms.js';
+import { sendDeliveryPIN } from '../services/sms.js';
 
 const router = express.Router();
-
-// HELPER — generate a random 4-digit delivery PIN
-function generatePIN() {
-  return String(Math.floor(1000 + Math.random() * 9000));
-}
 
 // POST /api/orders
 // Creates a new order in the database
@@ -37,12 +32,18 @@ router.post('/', async (req, res) => {
     }
 
     const food_amount = items.reduce((sum, i) => sum + i.price, 0);
-    const delivery_pin = generatePIN();
 
-       // Hash PIN — plain text is NEVER stored in the DB
-    const pinHash      = await bcrypt.hash(delivery_pin, 10);
-    const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hrs
+    // Fetch customer name FIRST — before the insert so it's available
+    const { data: customer } = await supabase
+      .from('customers')
+      .select('name')
+      .eq('phone', phone)
+      .single();
 
+    // Generate plain PIN now — hash it for DB, send plain via SMS
+    const pin = Math.floor(1000 + Math.random() * 9000).toString();
+    const pin_hash = await bcrypt.hash(pin, 10);
+    const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hours
 
     const { data, error } = await supabase
       .from('orders')
@@ -53,25 +54,19 @@ router.post('/', async (req, res) => {
         food_amount:     food_amount,
         customer_lat:    location?.lat || null,
         customer_lng:    location?.lng || null,
-        location:       location || null,
-        customer_area:  location?.areaName || location?.area || 'Narok Town',
+        location:        location || null,
+        customer_area:   location?.areaName || location?.area || 'Narok Town',
         mpesa_reference: mpesa_reference || null,
-        pin_hash:       pinHash,
-        pin_expires_at: pinExpiresAt,
-        pin_attempts:   0,
-        status:          'pending'
+        pin_hash:        pin_hash,
+        pin_expires_at:  pin_expires_at,
+        pin_attempts:    0,
+        status:          'pending',
+        customer_name:   customer?.name || null,
       })
       .select()
       .single();
 
     if (error) throw error;
-
-    // Send delivery PIN to customer via SMS (Africa's Talking)
-    // delivery_pin (plain text) sent via SMS only — pin_hash stored in DB for verification
-    sendSMS(
-      data.customer_phone,
-      `KFC Narok Order ${data.order_number}: Your delivery PIN is ${delivery_pin}. Share it with your rider ONLY after receiving your food.`
-    ).catch(e => console.warn('PIN SMS failed:', e.message));
 
       // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
     // Fire-and-forget: don't block the order response waiting for Daraja
@@ -101,6 +96,13 @@ router.post('/', async (req, res) => {
       stkSent:      stkSent   // tells frontend whether to show STK prompt UI
       // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
+
+    // Send delivery PIN via SMS — fire after response so customer gets it immediately
+    sendDeliveryPIN(phone, data.order_number, pin)
+      .then(r => {
+        if (r.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
+        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r.error);
+      });
 
   } catch (err) {
     console.error('Create order error:', err.message);
