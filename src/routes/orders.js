@@ -40,10 +40,10 @@ router.post('/', async (req, res) => {
       .eq('phone', phone)
       .single();
 
-    // Generate plain PIN now — hash it for DB, send plain via SMS
-    const pin = Math.floor(1000 + Math.random() * 9000).toString();
-    const pin_hash = await bcrypt.hash(pin, 10);
-    const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hours
+    // Generate PIN before insert — hash for DB, send plain via SMS
+    const pin          = Math.floor(1000 + Math.random() * 9000).toString();
+    const pin_hash     = await bcrypt.hash(pin, 10);
+    const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
     const { data, error } = await supabase
       .from('orders')
@@ -93,15 +93,15 @@ router.post('/', async (req, res) => {
       id:           data.id,
       order_number: data.order_number,
       status:       data.status,
-      stkSent:      stkSent   // tells frontend whether to show STK prompt UI
+      stkSent:      stkSent
       // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
 
-    // Send delivery PIN via SMS — fire after response so customer gets it immediately
+    // Send delivery PIN via SMS after response — non-blocking
     sendDeliveryPIN(phone, data.order_number, pin)
       .then(r => {
-        if (r.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
-        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r.error);
+        if (r?.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
+        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r?.error);
       });
 
   } catch (err) {
