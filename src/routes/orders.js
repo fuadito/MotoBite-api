@@ -23,6 +23,11 @@ const router = express.Router();
 // Called by initPay() in the frontend after cart is confirmed
 
 router.post('/', async (req, res) => {
+  // Hoisted so they're accessible in the fire-and-forget SMS block after try/catch
+  let pin        = null;
+  let orderData  = null;
+  let orderPhone = null;
+
   try {
     const phone = req.headers['x-user-phone'];
     const { items, notes, location, mpesa_reference } = req.body;
@@ -31,6 +36,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Phone and items are required' });
     }
 
+    orderPhone = phone;
     const food_amount = items.reduce((sum, i) => sum + i.price, 0);
 
     // Fetch customer name FIRST — before the insert so it's available
@@ -41,9 +47,9 @@ router.post('/', async (req, res) => {
       .single();
 
     // Generate PIN before insert — hash for DB, send plain via SMS
-    const pin          = Math.floor(1000 + Math.random() * 9000).toString();
-    const pin_hash     = await bcrypt.hash(pin, 10);
-    const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    pin                    = Math.floor(1000 + Math.random() * 9000).toString();
+    const pin_hash         = await bcrypt.hash(pin, 10);
+    const pin_expires_at   = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
     const { data, error } = await supabase
       .from('orders')
@@ -68,7 +74,9 @@ router.post('/', async (req, res) => {
 
     if (error) throw error;
 
-      // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
+    orderData = data;
+
+    // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
     // Fire-and-forget: don't block the order response waiting for Daraja
     let stkSent = false;
     try {
@@ -82,10 +90,10 @@ router.post('/', async (req, res) => {
       );
       const stkData = await stkRes.json();
       stkSent = !!stkData.success;
-      if (stkSent)         console.log(`💳 STK push sent for order ${data.order_number}`);
+      if (stkSent)              console.log(`💳 STK push sent for order ${data.order_number}`);
       else if (stkData.pending) console.log(`💳 STK skipped — credentials pending`);
-      else                 console.warn(`⚠️  STK push failed for order ${data.order_number}`);
-    } catch(e) {
+      else                      console.warn(`⚠️  STK push failed for order ${data.order_number}`);
+    } catch (e) {
       console.warn(`⚠️  STK push error for order ${data.order_number}:`, e.message);
     }
 
@@ -97,16 +105,23 @@ router.post('/', async (req, res) => {
       // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
 
-    // Send delivery PIN via SMS after response — non-blocking
-    sendDeliveryPIN(phone, data.order_number, pin)
-      .then(r => {
-        if (r?.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
-        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r?.error);
-      });
-
   } catch (err) {
     console.error('Create order error:', err.message);
     res.status(500).json({ error: 'Could not create order' });
+  }
+
+  // Send delivery PIN via SMS — fully outside try/catch so an SMS failure
+  // can NEVER interfere with the already-sent order response.
+  // Only fires if order was created successfully (orderData is set).
+  if (orderData && pin && orderPhone) {
+    sendDeliveryPIN(orderPhone, orderData.order_number, pin)
+      .then(r => {
+        if (r) console.log(`📱 PIN SMS sent to ${orderPhone} for order ${orderData.order_number}`);
+        else   console.warn(`⚠️  PIN SMS failed for ${orderPhone}`);
+      })
+      .catch(err => {
+        console.error(`⚠️  PIN SMS threw for ${orderPhone}:`, err.message);
+      });
   }
 });
 
