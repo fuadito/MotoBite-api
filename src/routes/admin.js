@@ -1,5 +1,5 @@
 // src/routes/admin.js
-
+//@ts-nocheck
 // Routes:
 //   GET  /api/admin/stats                  — dashboard metrics
 //   GET  /api/admin/orders                 — all orders

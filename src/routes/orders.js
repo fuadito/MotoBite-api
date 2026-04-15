@@ -1,4 +1,5 @@
 // src/routes/orders.js
+// @ts-nocheck
 
 // Routes:
 //   POST /api/orders                    — create new order
@@ -23,11 +24,6 @@ const router = express.Router();
 // Called by initPay() in the frontend after cart is confirmed
 
 router.post('/', async (req, res) => {
-  // Hoisted so they're accessible in the fire-and-forget SMS block after try/catch
-  let pin        = null;
-  let orderData  = null;
-  let orderPhone = null;
-
   try {
     const phone = req.headers['x-user-phone'];
     const { items, notes, location, mpesa_reference } = req.body;
@@ -36,7 +32,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Phone and items are required' });
     }
 
-    orderPhone = phone;
     const food_amount = items.reduce((sum, i) => sum + i.price, 0);
 
     // Fetch customer name FIRST — before the insert so it's available
@@ -47,9 +42,9 @@ router.post('/', async (req, res) => {
       .single();
 
     // Generate PIN before insert — hash for DB, send plain via SMS
-    pin                    = Math.floor(1000 + Math.random() * 9000).toString();
-    const pin_hash         = await bcrypt.hash(pin, 10);
-    const pin_expires_at   = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const pin            = Math.floor(1000 + Math.random() * 9000).toString();
+    const pin_hash       = await bcrypt.hash(pin, 10);
+    const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
     const { data, error } = await supabase
       .from('orders')
@@ -74,9 +69,7 @@ router.post('/', async (req, res) => {
 
     if (error) throw error;
 
-    orderData = data;
-
-    // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
+      // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
     // Fire-and-forget: don't block the order response waiting for Daraja
     let stkSent = false;
     try {
@@ -90,10 +83,10 @@ router.post('/', async (req, res) => {
       );
       const stkData = await stkRes.json();
       stkSent = !!stkData.success;
-      if (stkSent)              console.log(`💳 STK push sent for order ${data.order_number}`);
+      if (stkSent)         console.log(`💳 STK push sent for order ${data.order_number}`);
       else if (stkData.pending) console.log(`💳 STK skipped — credentials pending`);
-      else                      console.warn(`⚠️  STK push failed for order ${data.order_number}`);
-    } catch (e) {
+      else                 console.warn(`⚠️  STK push failed for order ${data.order_number}`);
+    } catch(e) {
       console.warn(`⚠️  STK push error for order ${data.order_number}:`, e.message);
     }
 
@@ -102,26 +95,18 @@ router.post('/', async (req, res) => {
       order_number: data.order_number,
       status:       data.status,
       stkSent:      stkSent
-      // delivery_pin intentionally NOT returned — customer gets it via SMS only
     });
+
+    // Send delivery PIN via SMS after response — non-blocking
+    sendDeliveryPIN(phone, data.order_number, pin)
+      .then(r => {
+        if (r?.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
+        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r?.error);
+      });
 
   } catch (err) {
     console.error('Create order error:', err.message);
     res.status(500).json({ error: 'Could not create order' });
-  }
-
-  // Send delivery PIN via SMS — fully outside try/catch so an SMS failure
-  // can NEVER interfere with the already-sent order response.
-  // Only fires if order was created successfully (orderData is set).
-  if (orderData && pin && orderPhone) {
-    sendDeliveryPIN(orderPhone, orderData.order_number, pin)
-      .then(r => {
-        if (r) console.log(`📱 PIN SMS sent to ${orderPhone} for order ${orderData.order_number}`);
-        else   console.warn(`⚠️  PIN SMS failed for ${orderPhone}`);
-      })
-      .catch(err => {
-        console.error(`⚠️  PIN SMS threw for ${orderPhone}:`, err.message);
-      });
   }
 });
 
@@ -190,115 +175,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-
-// PUT /api/orders/:id/confirm-payment
-// Customer confirms they have paid via M-Pesa
-// Updates payment status to 'paid'
-router.put('/:id/confirm-payment', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Get current order
-    const { data: order, error: fetchError } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (fetchError || !order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    // Update payment status
-    const { data, error } = await supabase
-      .from('orders')
-      .update({ 
-        payment_status: 'paid',
-        status: order.status === 'pending' ? 'paid' : order.status,
-        paid_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    console.log(`💳 Payment confirmed for order ${order.order_number}`);
-    res.json({ 
-      success: true,
-      message: 'Payment confirmed successfully',
-      order: data 
-    });
-
-  } catch (err) {
-    console.error('Confirm payment error:', err.message);
-    res.status(500).json({ error: 'Could not confirm payment', details: err.message });
-  }
-});
-
-// PUT /api/orders/:id/assign-rider
-// Admin/Customer manually assigns a rider to an order
-// Updates order with rider details
-router.put('/:id/assign-rider', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { rider_phone } = req.body;
-
-    if (!rider_phone) {
-      return res.status(400).json({ error: 'rider_phone is required' });
-    }
-
-    // Fetch rider details
-    const { data: rider, error: riderError } = await supabase
-      .from('riders')
-      .select('name, rating, phone')
-      .eq('phone', rider_phone)
-      .eq('status', 'approved')
-      .single();
-
-    if (riderError || !rider) {
-      return res.status(404).json({ error: 'Rider not found or not approved' });
-    }
-
-    // Check if rider is available
-    if (!rider.is_available) {
-      console.warn(`⚠️ Rider ${rider_phone} is offline but being assigned anyway`);
-    }
-
-    // Update order with rider assignment
-    const { data, error } = await supabase
-      .from('orders')
-      .update({
-        status: 'rider_assigned',
-        rider_phone: rider_phone,
-        rider_name: rider.name,
-        rider_rating: rider.rating,
-        assigned_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // Mark rider as unavailable
-    await supabase
-      .from('riders')
-      .update({ is_available: false })
-      .eq('phone', rider_phone);
-
-    console.log(`🏍️ Order ${id} assigned to rider ${rider.name} (${rider_phone})`);
-    res.json({ 
-      success: true,
-      message: 'Rider assigned successfully',
-      order: data 
-    });
-
-  } catch (err) {
-    console.error('Assign rider error:', err.message);
-    res.status(500).json({ error: 'Could not assign rider', details: err.message });
-  }
-});
 
 
 // POST /api/orders/:id/accept
