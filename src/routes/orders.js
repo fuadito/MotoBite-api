@@ -24,90 +24,183 @@ const router = express.Router();
 // Called by initPay() in the frontend after cart is confirmed
 
 router.post('/', async (req, res) => {
+  console.log('='.repeat(50));
+  console.log('📦 NEW ORDER REQUEST');
+  console.log('='.repeat(50));
+  
+  let pin = null;
+  let orderData = null;
+  let orderPhone = null;
+
   try {
     const phone = req.headers['x-user-phone'];
     const { items, notes, location, mpesa_reference } = req.body;
 
-    if (!phone || !items || !items.length) {
-      return res.status(400).json({ error: 'Phone and items are required' });
+    console.log('📞 Phone from header:', phone);
+    console.log('🛒 Items:', JSON.stringify(items, null, 2));
+    console.log('📝 Notes:', notes);
+    console.log('📍 Location:', JSON.stringify(location, null, 2));
+    console.log('💳 M-Pesa ref:', mpesa_reference);
+
+    // Validation
+    if (!phone) {
+      console.error('❌ ERROR: Missing phone number');
+      return res.status(400).json({ error: 'Phone number required in x-user-phone header' });
     }
 
-    const food_amount = items.reduce((sum, i) => sum + i.price, 0);
+    if (!items || !items.length) {
+      console.error('❌ ERROR: Missing or empty items array');
+      return res.status(400).json({ error: 'Items are required' });
+    }
 
-    // Fetch customer name FIRST — before the insert so it's available
-    const { data: customer } = await supabase
-      .from('customers')
-      .select('name')
-      .eq('phone', phone)
-      .single();
+    orderPhone = phone;
+    
+    // Calculate total
+    const food_amount = items.reduce((sum, i) => {
+      console.log(`  - ${i.name}: ${i.price}`);
+      return sum + (i.price || 0);
+    }, 0);
 
-    // Generate PIN before insert — hash for DB, send plain via SMS
-    const pin            = Math.floor(1000 + Math.random() * 9000).toString();
-    const pin_hash       = await bcrypt.hash(pin, 10);
+    console.log('💰 Total calculated:', food_amount);
+
+    if (!food_amount || food_amount <= 0) {
+      console.error('❌ ERROR: Invalid food amount:', food_amount);
+      return res.status(400).json({ error: 'Invalid order total' });
+    }
+
+    // Fetch customer name (optional)
+    console.log('👤 Fetching customer from database...');
+    let customerName = null;
+    try {
+      const { data: customer, error: customerError } = await supabase
+        .from('customers')
+        .select('name')
+        .eq('phone', phone)
+        .maybeSingle();
+
+      if (customerError) {
+        console.warn('⚠️ Customer fetch error:', customerError.message);
+      }
+
+      if (customer) {
+        customerName = customer.name;
+        console.log('✅ Customer found:', customerName);
+      } else {
+        console.log('ℹ️ New customer (no record found)');
+      }
+    } catch (err) {
+      console.warn('⚠️ Customer lookup failed:', err.message);
+    }
+
+    // Generate PIN
+    console.log('🔐 Generating PIN...');
+    pin = Math.floor(1000 + Math.random() * 9000).toString();
+    
+    console.log('🔒 Hashing PIN with bcrypt...');
+    const pin_hash = await bcrypt.hash(pin, 10);
+    console.log('✅ PIN hashed successfully');
+    
     const pin_expires_at = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    console.log('⏰ PIN expires at:', pin_expires_at);
+
+    // Prepare data
+    const insertData = {
+      customer_phone: phone,
+      items: items,
+      special_notes: notes || null,
+      food_amount: food_amount,
+      customer_lat: location?.lat || null,
+      customer_lng: location?.lng || null,
+      location: location || null,
+      customer_area: location?.areaName || location?.area || 'Narok Town',
+      mpesa_reference: mpesa_reference || null,
+      pin_hash: pin_hash,
+      pin_expires_at: pin_expires_at,
+      pin_attempts: 0,
+      status: 'pending',
+      payment_status: 'pending',
+      customer_name: customerName,
+    };
+
+    console.log('💾 Data to insert:', JSON.stringify(insertData, null, 2));
+    console.log('🗄️ Inserting into Supabase...');
 
     const { data, error } = await supabase
       .from('orders')
-      .insert({
-        customer_phone:  phone,
-        items:           items,
-        special_notes:   notes || null,
-        food_amount:     food_amount,
-        customer_lat:    location?.lat || null,
-        customer_lng:    location?.lng || null,
-        location:        location || null,
-        customer_area:   location?.areaName || location?.area || 'Narok Town',
-        mpesa_reference: mpesa_reference || null,
-        pin_hash:        pin_hash,
-        pin_expires_at:  pin_expires_at,
-        pin_attempts:    0,
-        status:          'pending',
-        customer_name:   customer?.name || null,
-      })
+      .insert(insertData)
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ SUPABASE ERROR:');
+      console.error('   Message:', error.message);
+      console.error('   Details:', error.details);
+      console.error('   Hint:', error.hint);
+      console.error('   Code:', error.code);
+      console.error('   Full error:', JSON.stringify(error, null, 2));
+      throw new Error(`Supabase error: ${error.message}`);
+    }
 
-      // Trigger M-Pesa STK push — customer gets a payment prompt on their phone
-    // Fire-and-forget: don't block the order response waiting for Daraja
+    orderData = data;
+    console.log('✅ ORDER CREATED SUCCESSFULLY!');
+    console.log('   ID:', orderData.id);
+    console.log('   Order Number:', orderData.order_number);
+    console.log('   Status:', orderData.status);
+
+    // STK push (fire-and-forget)
+    console.log('💳 Attempting STK push...');
     let stkSent = false;
     try {
       const stkRes = await fetch(
         `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/mpesa/stk-push`,
         {
-          method:  'POST',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ orderId: data.id, phone, amount: food_amount })
+          body: JSON.stringify({ orderId: data.id, phone, amount: food_amount })
         }
       );
       const stkData = await stkRes.json();
       stkSent = !!stkData.success;
-      if (stkSent)         console.log(`💳 STK push sent for order ${data.order_number}`);
-      else if (stkData.pending) console.log(`💳 STK skipped — credentials pending`);
-      else                 console.warn(`⚠️  STK push failed for order ${data.order_number}`);
-    } catch(e) {
-      console.warn(`⚠️  STK push error for order ${data.order_number}:`, e.message);
+      if (stkSent) console.log(`✅ STK push sent`);
+      else console.log(`ℹ️ STK push skipped:`, stkData);
+    } catch (e) {
+      console.warn(`⚠️ STK push error:`, e.message);
     }
 
+    console.log('📤 Sending success response to client');
     res.json({
-      id:           data.id,
+      id: data.id,
       order_number: data.order_number,
-      status:       data.status,
-      stkSent:      stkSent
+      status: data.status,
+      stkSent: stkSent
     });
 
-    // Send delivery PIN via SMS after response — non-blocking
-    sendDeliveryPIN(phone, data.order_number, pin)
-      .then(r => {
-        if (r?.success) console.log(`📱 PIN SMS sent to ${phone} for order ${data.order_number}`);
-        else console.warn(`⚠️  PIN SMS failed for ${phone}:`, r?.error);
-      });
-
   } catch (err) {
-    console.error('Create order error:', err.message);
-    res.status(500).json({ error: 'Could not create order' });
+    console.error('❌ FATAL ERROR IN ORDER CREATION:');
+    console.error('   Error name:', err.name);
+    console.error('   Error message:', err.message);
+    console.error('   Stack trace:', err.stack);
+    
+    res.status(500).json({ 
+      error: 'Could not create order',
+      details: err.message
+    });
   }
+
+  // Send PIN SMS (outside try/catch)
+  if (orderData && pin && orderPhone) {
+    console.log('📱 Sending PIN SMS...');
+    sendDeliveryPIN(orderPhone, orderData.order_number, pin)
+      .then(r => {
+        if (r) console.log(`✅ PIN SMS sent to ${orderPhone}`);
+        else console.warn(`⚠️ PIN SMS failed for ${orderPhone}`);
+      })
+      .catch(err => {
+        console.error(`❌ PIN SMS error:`, err.message);
+      });
+  }
+  
+  console.log('='.repeat(50));
 });
 
 
