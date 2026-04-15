@@ -226,36 +226,4 @@ router.get('/available', async (req, res) => {
 });
 
 
-// POST /api/orders/:id/assign-rider
-router.post('/:id/assign-rider', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { rider_phone } = req.body;
-    
-    const { data: rider } = await supabase
-      .from('riders')
-      .select('name, rating')
-      .eq('phone', rider_phone)
-      .single();
-    
-    const { error } = await supabase
-      .from('orders')
-      .update({
-        status: 'rider_assigned',
-        rider_phone,
-        rider_name: rider?.name,
-        rider_rating: rider?.rating,
-        assigned_at: new Date().toISOString()
-      })
-      .eq('id', id);
-    
-    if (error) throw error;
-    
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
 export default router;

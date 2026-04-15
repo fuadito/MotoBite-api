@@ -53,8 +53,10 @@ export async function sendSMS(phone, message) {
     });
     console.log(`📱 SMS sent to ${normalized}:`, result);
     return result;
-  } catch (err) {
-    console.error('SMS error:', err.message);
+  } 
+  
+  catch (err) {
+    console.warn('SMS skipped — AT credentials not set');
     return null;
   }
 }

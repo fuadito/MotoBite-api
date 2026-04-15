@@ -12,7 +12,7 @@
 
 
 import express from 'express';
-import bcrypt  from 'bcrypt';
+import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
 import { sendDeliveryPIN } from '../services/sms.js';
 
@@ -190,6 +190,115 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+
+// PUT /api/orders/:id/confirm-payment
+// Customer confirms they have paid via M-Pesa
+// Updates payment status to 'paid'
+router.put('/:id/confirm-payment', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get current order
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Update payment status
+    const { data, error } = await supabase
+      .from('orders')
+      .update({ 
+        payment_status: 'paid',
+        status: order.status === 'pending' ? 'paid' : order.status,
+        paid_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    console.log(`💳 Payment confirmed for order ${order.order_number}`);
+    res.json({ 
+      success: true,
+      message: 'Payment confirmed successfully',
+      order: data 
+    });
+
+  } catch (err) {
+    console.error('Confirm payment error:', err.message);
+    res.status(500).json({ error: 'Could not confirm payment', details: err.message });
+  }
+});
+
+// PUT /api/orders/:id/assign-rider
+// Admin/Customer manually assigns a rider to an order
+// Updates order with rider details
+router.put('/:id/assign-rider', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rider_phone } = req.body;
+
+    if (!rider_phone) {
+      return res.status(400).json({ error: 'rider_phone is required' });
+    }
+
+    // Fetch rider details
+    const { data: rider, error: riderError } = await supabase
+      .from('riders')
+      .select('name, rating, phone')
+      .eq('phone', rider_phone)
+      .eq('status', 'approved')
+      .single();
+
+    if (riderError || !rider) {
+      return res.status(404).json({ error: 'Rider not found or not approved' });
+    }
+
+    // Check if rider is available
+    if (!rider.is_available) {
+      console.warn(`⚠️ Rider ${rider_phone} is offline but being assigned anyway`);
+    }
+
+    // Update order with rider assignment
+    const { data, error } = await supabase
+      .from('orders')
+      .update({
+        status: 'rider_assigned',
+        rider_phone: rider_phone,
+        rider_name: rider.name,
+        rider_rating: rider.rating,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Mark rider as unavailable
+    await supabase
+      .from('riders')
+      .update({ is_available: false })
+      .eq('phone', rider_phone);
+
+    console.log(`🏍️ Order ${id} assigned to rider ${rider.name} (${rider_phone})`);
+    res.json({ 
+      success: true,
+      message: 'Rider assigned successfully',
+      order: data 
+    });
+
+  } catch (err) {
+    console.error('Assign rider error:', err.message);
+    res.status(500).json({ error: 'Could not assign rider', details: err.message });
+  }
+});
 
 
 // POST /api/orders/:id/accept
