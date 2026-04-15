@@ -5,6 +5,8 @@
 //   POST /api/orders                    — create new order
 //   GET  /api/orders/history            — customer order history
 //   GET  /api/orders/:id                — get order status
+// PUT /api/orders/:id/confirm-payment   — Confirm payment
+// PUT /api/orders/:id/assign-rider      — Assign rider
 //   POST /api/orders/:id/accept         — rider accepts order
 //   POST /api/orders/:id/pay            — trigger M-Pesa STK push
 //   POST /api/orders/:id/rate           — submit food + rider rating
@@ -268,6 +270,86 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// PUT /api/orders/:id/assign-rider
+// Assign a rider to an order
+router.put('/:id/assign-rider', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rider_phone } = req.body;
+
+    console.log(`🏍️ Assigning rider to order ${id}`);
+    console.log('📞 Rider phone:', rider_phone);
+
+    // Validate rider_phone
+    if (!rider_phone) {
+      console.error('❌ Missing rider_phone');
+      return res.status(400).json({ error: 'rider_phone is required' });
+    }
+
+    // Get rider details
+    console.log('👤 Fetching rider details...');
+    const { data: rider, error: riderError } = await supabase
+      .from('riders')
+      .select('name, rating, phone')
+      .eq('phone', rider_phone)
+      .eq('status', 'approved')
+      .single();
+
+    if (riderError || !rider) {
+      console.error('❌ Rider not found or not approved:', riderError?.message);
+      return res.status(404).json({ error: 'Rider not found or not approved' });
+    }
+
+    console.log('✅ Rider found:', rider.name);
+
+    // Update order with rider details
+    console.log('💾 Updating order...');
+    const { data: order, error: updateError } = await supabase
+      .from('orders')
+      .update({
+        status: 'rider_assigned',
+        rider_phone: rider_phone,
+        rider_name: rider.name,
+        rider_rating: rider.rating,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('❌ Update error:', updateError);
+      throw updateError;
+    }
+
+    if (!order) {
+      console.error('❌ Order not found');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Mark rider as unavailable
+    console.log('🔒 Marking rider as unavailable...');
+    await supabase
+      .from('riders')
+      .update({ is_available: false })
+      .eq('phone', rider_phone);
+
+    console.log('✅ Rider assigned successfully');
+    res.json({
+      success: true,
+      message: 'Rider assigned successfully',
+      order: order
+    });
+
+  } catch (err) {
+    console.error('❌ Assign rider error:', err.message);
+    res.status(500).json({
+      error: 'Could not assign rider',
+      details: err.message
+    });
+  }
+});
+
 
 
 // POST /api/orders/:id/accept
@@ -324,35 +406,59 @@ router.post('/:id/accept', async (req, res) => {
   }
 });
 
-// POST /api/orders/:id/pay
-// Triggers M-Pesa STK Push to customer's phone
-// Called after order is created
 
-router.post('/:id/pay', async (req, res) => {
+// PUT /api/orders/:id/confirm-payment
+// Customer confirms they have paid via M-Pesa
+router.put('/:id/confirm-payment', async (req, res) => {
   try {
     const { id } = req.params;
-    const phone = req.headers['x-user-phone'];
 
-    // Get the order
-    const { data: order, error } = await supabase
+    console.log(`💳 Confirming payment for order ${id}`);
+
+    // Get current order
+    const { data: currentOrder, error: fetchError } = await supabase
       .from('orders')
       .select('*')
       .eq('id', id)
       .single();
 
-    if (error || !order) {
+    if (fetchError || !currentOrder) {
+      console.error('❌ Order not found:', fetchError?.message);
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // TODO: Trigger real M-Pesa STK push here
-    // We will wire this up when Daraja credentials are ready
-    console.log(`💳 STK push for ${phone} — KES ${order.food_amount}`);
+    console.log('📦 Current order status:', currentOrder.status);
 
-    res.json({ success: true, message: 'M-Pesa prompt sent' });
+    // Update payment status
+    const { data: order, error: updateError } = await supabase
+      .from('orders')
+      .update({
+        payment_status: 'paid',
+        status: currentOrder.status === 'pending' ? 'paid' : currentOrder.status,
+        paid_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('❌ Update error:', updateError);
+      throw updateError;
+    }
+
+    console.log('✅ Payment confirmed');
+    res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      order: order
+    });
 
   } catch (err) {
-    console.error('Pay error:', err.message);
-    res.status(500).json({ error: 'Payment initiation failed' });
+    console.error('❌ Confirm payment error:', err.message);
+    res.status(500).json({
+      error: 'Could not confirm payment',
+      details: err.message
+    });
   }
 });
 
