@@ -1,5 +1,5 @@
 // src/services/sms.js
-// Africa's Talking SMS wrapper
+// Africa's Talking SMS wrapper - Direct REST API implementation
 // All SMS sending goes through this file — nothing calls AT directly
 //
 // Uses these Railway environment variables:
@@ -14,16 +14,16 @@
 // Go live:
 //   AT_USERNAME=<your real AT username>  +  AT_API_KEY=<your live API key>
 
+import axios from 'axios';
 
-import AfricasTalking from 'africastalking';
+const AT_API_KEY = process.env.AT_API_KEY;
+const AT_USERNAME = process.env.AT_USERNAME || 'sandbox';
+const AT_SENDER_ID = process.env.AT_SENDER_ID || 'KFC-NAROK';
 
-// Simple direct init — AT client is created once at module load
-const at = AfricasTalking({
-  apiKey:   process.env.AT_API_KEY,
-  username: process.env.AT_USERNAME
-});
-
-const sms = at.SMS;
+// Determine API URL based on environment
+const API_URL = AT_USERNAME === 'sandbox'
+  ? 'https://api.sandbox.africastalking.com/version1/messaging'
+  : 'https://api.africastalking.com/version1/messaging';
 
 
 // ─── HELPER — phone formatter ─────────────────────────────────────────────────
@@ -45,18 +45,49 @@ function formatPhone(phone) {
 
 export async function sendSMS(phone, message) {
   try {
+    // Check if credentials are set
+    if (!AT_API_KEY) {
+      console.warn('⚠️ SMS skipped — AT_API_KEY not set');
+      return null;
+    }
+
     const normalized = formatPhone(phone);
-    const result = await sms.send({
-      to:      [normalized],
-      message,
-      from:    process.env.AT_SENDER_ID || 'KFC-NAROK'
+    
+    // Prepare form data for Africa's Talking API
+    const params = new URLSearchParams({
+      username: AT_USERNAME,
+      to: normalized,
+      message: message,
+      from: AT_SENDER_ID
     });
-    console.log(`📱 SMS sent to ${normalized}:`, result);
+
+    // Send SMS via REST API
+    const response = await axios.post(API_URL, params.toString(), {
+      headers: {
+        'apiKey': AT_API_KEY,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      }
+    });
+
+    // Parse response
+    const result = response.data;
+    const recipient = result.SMSMessageData?.Recipients?.[0];
+    
+    // Check if successful
+    const success = recipient?.status === 'Success' || recipient?.statusCode === 101;
+    
+    if (success) {
+      console.log(`📱 SMS sent to ${normalized}:`, result);
+    } else {
+      console.warn(`⚠️ SMS failed to ${normalized}:`, recipient?.status || 'Unknown error');
+    }
+
     return result;
   } 
-  
   catch (err) {
-    console.warn('SMS skipped — AT credentials not set');
+    console.error('❌ SMS error:', err.response?.data || err.message);
+    console.warn('SMS skipped — AT credentials not set or API error');
     return null;
   }
 }

@@ -11,7 +11,7 @@
 
 // FIX: top-level ES module import — require() doesn't work with "type":"module"
 import express from 'express';
-import bcrypt  from 'bcrypt';
+import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
 import { sendRiderApproved, sendRiderRejected, sendRiderSuspended, sendDeliveryPIN } from '../services/sms.js';
 
