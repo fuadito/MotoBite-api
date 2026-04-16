@@ -1,4 +1,4 @@
-// src/index.js — KFC NAROK BACKEND ENTRY POINT
+// src/index.js — MotoBite-api ENTRY POINT
 
 // All imports MUST be at the top in ES modules
 import express from 'express';
@@ -41,7 +41,7 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (req, res) => {
   res.json({
     status: 'running',
-    app: 'KFC Narok Backend',
+    app: 'MotoBite-api',
     time: new Date().toISOString()
   });
 });
@@ -76,7 +76,7 @@ app.use((err, req, res, next) => {
 
 // START SERVER
 app.listen(PORT, () => {
-  console.log(`✅ KFC Narok Backend running on http://localhost:${PORT}`);
+  console.log(`✅ MotoBite-api running on http://localhost:${PORT}`);
   console.log(`📋 Health check: http://localhost:${PORT}/health`);
 
   // Re-dispatch any "ready" orders with no rider every 3 minutes
