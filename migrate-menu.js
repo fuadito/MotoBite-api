@@ -5,7 +5,7 @@
 // HOW TO RUN:
 //   node migrate-menu.js
 //
-// Run from the root of kfc-narok-backend folder
+// Run from the root of MotoBite-api folder
 
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
