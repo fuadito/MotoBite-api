@@ -1,33 +1,36 @@
 // src/services/sms.js
-// Africa's Talking SMS wrapper - Direct REST API implementation
-// All SMS sending goes through this file — nothing calls AT directly
+// Twilio SMS wrapper
+// All SMS sending goes through this file
 //
-// Uses these Railway environment variables:
-//   AT_API_KEY    — your Africa's Talking API key
-//   AT_USERNAME   — your AT username (sandbox during testing, your username when live)
-//   AT_SENDER_ID  — optional registered sender ID e.g. 'KFCNAROK'
-//
-// Sandbox testing:
-//   AT_USERNAME=sandbox  +  AT_API_KEY=<your sandbox key from AT dashboard>
-//   Messages won't reach real phones but the API returns success responses
-//
-// Go live:
-//   AT_USERNAME=<your real AT username>  +  AT_API_KEY=<your live API key>
+// Uses these environment variables:
+//   TWILIO_ACCOUNT_SID  — Your Twilio Account SID
+//   TWILIO_AUTH_TOKEN   — Your Twilio Auth Token
+//   TWILIO_PHONE_NUMBER — Your Twilio phone number (e.g., +1234567890)
 
-import axios from 'axios';
+import twilio from 'twilio';
 
-const AT_API_KEY = process.env.AT_API_KEY;
-const AT_USERNAME = process.env.AT_USERNAME || 'sandbox';
-const AT_SENDER_ID = process.env.AT_SENDER_ID || 'KFC-NAROK';
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 
-// Determine API URL based on environment
-const API_URL = AT_USERNAME === 'sandbox'
-  ? 'https://api.sandbox.africastalking.com/version1/messaging'
-  : 'https://api.africastalking.com/version1/messaging';
+// ✅ ADD DEBUG LOGGING
+console.log('🔍 Twilio Environment Check:');
+console.log('   ACCOUNT_SID:', TWILIO_ACCOUNT_SID ? `${TWILIO_ACCOUNT_SID.substring(0, 10)}...` : '❌ Missing');
+console.log('   AUTH_TOKEN:', TWILIO_AUTH_TOKEN ? '✅ Set' : '❌ Missing');
+console.log('   PHONE_NUMBER:', TWILIO_PHONE_NUMBER || '❌ Missing');
 
+// Initialize Twilio client
+let client = null;
+
+if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
+  client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  console.log('✅ Twilio SMS client initialized');
+} else {
+  console.warn('⚠️ Twilio credentials not set - SMS will not be sent');
+}
 
 // ─── HELPER — phone formatter ─────────────────────────────────────────────────
-// Converts any Kenyan number to +254XXXXXXXXX format AT requires
+// Converts any Kenyan number to +254XXXXXXXXX format
 // Accepts: 07XXXXXXXX  /  7XXXXXXXX  /  2547XXXXXXXX  /  +2547XXXXXXXX
 
 function formatPhone(phone) {
@@ -38,67 +41,47 @@ function formatPhone(phone) {
   return `+${digits}`;
 }
 
-
 // ─── CORE SEND ────────────────────────────────────────────────────────────────
 // All SMS calls pass through here
-// Returns the Africa's Talking response object on success, or null on failure
+// Returns true on success, false on failure
 
 export async function sendSMS(phone, message) {
   try {
-    // Check if credentials are set
-    if (!AT_API_KEY) {
-      console.warn('⚠️ SMS skipped — AT_API_KEY not set');
-      return null;
+    if (!client) {
+      console.warn('⚠️ SMS skipped — Twilio not configured');
+      return false;
     }
 
     const normalized = formatPhone(phone);
     
-    // Prepare form data for Africa's Talking API
-    const params = new URLSearchParams({
-      username: AT_USERNAME,
-      to: normalized,
-      message: message,
-      from: AT_SENDER_ID
+    console.log(`📱 Sending SMS to ${normalized}`);
+
+    const result = await client.messages.create({
+      body: message,
+      from: TWILIO_PHONE_NUMBER,
+      to: normalized
     });
 
-    // Send SMS via REST API
-    const response = await axios.post(API_URL, params.toString(), {
-      headers: {
-        'apiKey': AT_API_KEY,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json'
-      }
-    });
-
-    // Parse response
-    const result = response.data;
-    const recipient = result.SMSMessageData?.Recipients?.[0];
-    
-    // Check if successful
-    const success = recipient?.status === 'Success' || recipient?.statusCode === 101;
-    
-    if (success) {
-      console.log(`📱 SMS sent to ${normalized}:`, result);
+    if (result.status === 'queued' || result.status === 'sent' || result.status === 'delivered') {
+      console.log(`✅ SMS sent to ${normalized} (SID: ${result.sid})`);
+      return true;
     } else {
-      console.warn(`⚠️ SMS failed to ${normalized}:`, recipient?.status || 'Unknown error');
+      console.warn(`⚠️ SMS status: ${result.status} for ${normalized}`);
+      return false;
     }
-
-    return result;
   } 
   catch (err) {
-    console.error('❌ SMS error:', err.response?.data || err.message);
-    console.warn('SMS skipped — AT credentials not set or API error');
-    return null;
+    console.error('❌ SMS error:', err.message);
+    return false;
   }
 }
-
 
 // ─── MESSAGE TEMPLATES ────────────────────────────────────────────────────────
 
 // Sent to customer immediately after placing an order
 export async function sendDeliveryPIN(phone, orderNumber, pin) {
-  const message =
-    `KFC Narok - Order ${orderNumber}\n` +
+  const message = 
+    `MotoBite - Order ${orderNumber}\n` +
     `Your delivery PIN is: ${pin}\n` +
     `Share this PIN with your rider ONLY after you receive your food.\n` +
     `Do not share it before delivery.`;
@@ -109,7 +92,7 @@ export async function sendDeliveryPIN(phone, orderNumber, pin) {
 // Sent to rider when admin approves their application
 export async function sendRiderApproved(phone, name) {
   const message =
-    `Congratulations! Your KFC Narok rider application has been APPROVED. ` +
+    `Congratulations! Your MotoBite rider application has been APPROVED. ` +
     `You can now log in to the app with your phone number and start earning. ` +
     `Welcome to the team, ${name}!`;
 
@@ -119,8 +102,8 @@ export async function sendRiderApproved(phone, name) {
 // Sent to rider when admin rejects their application
 export async function sendRiderRejected(phone, name) {
   const message =
-    `Hi ${name}, your KFC Narok rider application was not successful at this time. ` +
-    `Contact us at 0702 923 826 for more information.`;
+    `Hi ${name}, your MotoBite rider application was not successful at this time. ` +
+    `Contact us at support@motobite.com for more information.`;
 
   return sendSMS(phone, message);
 }
@@ -128,8 +111,17 @@ export async function sendRiderRejected(phone, name) {
 // Sent to rider when their account is suspended
 export async function sendRiderSuspended(phone) {
   const message =
-    `Your KFC Narok rider account has been suspended. ` +
-    `Contact us on 0702 923 826 if you believe this is a mistake.`;
+    `Your MotoBite rider account has been suspended. ` +
+    `Contact us at support@motobite.com if you believe this is a mistake.`;
+
+  return sendSMS(phone, message);
+}
+
+// Send order confirmation SMS
+export async function sendOrderConfirmation(phone, orderNumber) {
+  const message =
+    `MotoBite - Order ${orderNumber} received! ` +
+    `We're preparing your food. You'll receive your delivery PIN shortly.`;
 
   return sendSMS(phone, message);
 }
