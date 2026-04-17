@@ -8,14 +8,23 @@ import express from 'express';
 import supabase from '../services/supabase.js';
 
 const router = express.Router();
+function formatPhone(phone) {
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.startsWith('254')) return `+${digits}`;
+  if (digits.startsWith('0'))   return `+254${digits.slice(1)}`;
+  if (digits.length === 9)      return `+254${digits}`;
+  return `+${digits}`;
+}
 
 // POST /api/customer/login
 // If customer exists — return their data
 // If new — create their record
 
 router.post('/login', async (req, res) => {
-  try {
-    const { phone, name } = req.body;
+  try {    
+    const { phone: rawPhone, name } = req.body;
+    const phone = formatPhone(rawPhone);
+
 
     if (!phone || !name) {
       return res.status(400).json({ error: 'Phone and name are required' });

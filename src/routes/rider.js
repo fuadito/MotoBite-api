@@ -28,7 +28,6 @@ function formatPhone(phone) {
 router.post('/register', async (req, res) => {
   try {
     const { phone, name, idPath, licPath, selfiePath } = req.body;
-
     if (!phone || !name) {
       return res.status(400).json({ error: 'Phone and name are required' });
     }
