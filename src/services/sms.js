@@ -101,7 +101,7 @@ export async function sendSMS(phone, message) {
 
     const result = await client.messages.create(messageParams);
 
-    const successStatuses = ['queued', 'sent', 'delivered'];
+    const successStatuses = ['accepted', 'queued', 'sent', 'delivered'];
 
     if (successStatuses.includes(result.status)) {
       console.log(`✅ SMS sent to ${normalized} | SID: ${result.sid} | Status: ${result.status}`);
