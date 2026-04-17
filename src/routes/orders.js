@@ -21,6 +21,16 @@ import { sendDeliveryPIN } from '../services/sms.js';
 
 const router = express.Router();
 
+function formatPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+
+  if (digits.startsWith('254')) return `+${digits}`;
+  if (digits.startsWith('0')) return `+254${digits.slice(1)}`;
+  if (digits.length === 9) return `+254${digits}`;
+
+  return `+${digits}`;
+}
+
 // POST /api/orders
 // Creates a new order in the database
 // Called by initPay() in the frontend after cart is confirmed
@@ -35,7 +45,8 @@ router.post('/', async (req, res) => {
   let orderPhone = null;
 
   try {
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
     const { items, notes, location, mpesa_reference } = req.body;
 
     console.log('📞 Phone from header:', phone);
@@ -214,7 +225,8 @@ router.post('/', async (req, res) => {
 
 router.get('/history', async (req, res) => {
   try {
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
 
     if (!phone) {
       return res.status(400).json({ error: 'Phone number required' });
@@ -360,7 +372,8 @@ router.put('/:id/assign-rider', async (req, res) => {
 router.post('/:id/accept', async (req, res) => {
   try {
     const { id }  = req.params;
-    const phone   = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
 
     if (!phone) {
       return res.status(400).json({ error: 'Phone required' });
@@ -469,7 +482,8 @@ router.put('/:id/confirm-payment', async (req, res) => {
 router.post('/:id/rate', async (req, res) => {
   try {
     const { id } = req.params;
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
     const { foodStars, riderStars } = req.body;
 
     if (!foodStars || !riderStars) {

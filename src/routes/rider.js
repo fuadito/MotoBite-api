@@ -11,6 +11,16 @@ import supabase from '../services/supabase.js';
 
 const router = express.Router();
 
+function formatPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+
+  if (digits.startsWith('254')) return `+${digits}`;
+  if (digits.startsWith('0')) return `+254${digits.slice(1)}`;
+  if (digits.length === 9) return `+254${digits}`;
+
+  return `+${digits}`;
+}
+
 // POST /api/rider/register
 // Called when rider submits their application with documents
 // Saves rider to database with status 'pending' for admin review
@@ -124,7 +134,8 @@ router.post('/login', async (req, res) => {
 
 router.post('/availability', async (req, res) => {
   try {
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
     const { available } = req.body;
 
     if (!phone) {
@@ -184,7 +195,8 @@ router.post('/location', async (req, res) => {
 // Used to restore state if rider refreshes the page mid-delivery
 router.get('/active-order', async (req, res) => {
   try {
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
 
     if (!phone) {
       return res.status(400).json({ error: 'Phone required' });
