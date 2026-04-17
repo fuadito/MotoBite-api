@@ -23,19 +23,20 @@ function formatPhone(phone) {
 router.post('/login', async (req, res) => {
   try {    
     const { phone: rawPhone, name } = req.body;
-    const phone = formatPhone(rawPhone);
 
-
-    if (!phone || !name) {
+    // Validate BEFORE formatPhone — formatPhone(undefined) returns '+254' which is truthy
+    if (!rawPhone || !name) {
       return res.status(400).json({ error: 'Phone and name are required' });
     }
 
-    // Check if customer already exists
+    const phone = formatPhone(rawPhone);
+
+    // Check if customer already exists — use maybeSingle() to avoid PGRST116 on new customers
     const { data: existing } = await supabase
       .from('customers')
       .select('*')
       .eq('phone', phone)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       // Update name and return

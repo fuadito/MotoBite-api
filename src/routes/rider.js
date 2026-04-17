@@ -27,17 +27,18 @@ function formatPhone(phone) {
 
 router.post('/register', async (req, res) => {
   try {
-    const { phone, name, idPath, licPath, selfiePath } = req.body;
-    if (!phone || !name) {
+    const { phone: rawPhone, name, idPath, licPath, selfiePath } = req.body;
+    if (!rawPhone || !name) {
       return res.status(400).json({ error: 'Phone and name are required' });
     }
+    const phone = formatPhone(rawPhone); // normalize to +254XXXXXXXXX
 
     // Check if rider already applied
     const { data: existing } = await supabase
       .from('riders')
       .select('id, status')
       .eq('phone', phone)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       return res.json({
@@ -79,17 +80,18 @@ router.post('/register', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone: rawPhone } = req.body;
 
-    if (!phone) {
+    if (!rawPhone) {
       return res.status(400).json({ error: 'Phone number required' });
     }
+    const phone = formatPhone(rawPhone); // normalize to +254XXXXXXXXX
 
-    const { data: rider, error } = await supabase
+    const { data: rider } = await supabase
       .from('riders')
       .select('*')
       .eq('phone', phone)
-      .single();
+      .maybeSingle();
 
     // Rider not found — they need to register
     if (!rider) {
@@ -206,10 +208,9 @@ router.get('/active-order', async (req, res) => {
       .select('*')
       .eq('rider_phone', phone)
       .in('status', ['rider_assigned', 'picked_up'])
-      .single();
+      .maybeSingle();
 
-       // PGRST116 = no rows found — that's fine, just means no active order
-    if (error && error.code !== 'PGRST116') throw error;
+    if (error) throw error;
 
     res.json({ order: data || null });
 

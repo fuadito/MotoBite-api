@@ -261,7 +261,7 @@ router.get('/:id', async (req, res) => {
 
     const { data, error } = await supabase
       .from('orders')
-      .select('*, riders(name, phone, rating, current_lat, current_lng)')
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -269,12 +269,23 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // Add rider lat/lng at top level for easy access in frontend
-    res.json({
-      ...data,
-      rider_lat: data.riders?.current_lat || null,
-      rider_lng: data.riders?.current_lng || null,
-    });
+    // Fetch rider location separately (avoids requiring a FK relationship)
+    let rider_lat = null, rider_lng = null, rider_name = data.rider_name || null, rider_rating = data.rider_rating || null;
+    if (data.rider_phone) {
+      const { data: rider } = await supabase
+        .from('riders')
+        .select('current_lat, current_lng, name, rating')
+        .eq('phone', data.rider_phone)
+        .maybeSingle();
+      if (rider) {
+        rider_lat = rider.current_lat;
+        rider_lng = rider.current_lng;
+        rider_name = rider_name || rider.name;
+        rider_rating = rider_rating || rider.rating;
+      }
+    }
+
+    res.json({ ...data, rider_lat, rider_lng, rider_name, rider_rating });
 
   } catch (err) {
     console.error('Get order error:', err.message);
@@ -388,6 +399,11 @@ router.post('/:id/accept', async (req, res) => {
 
     if (existing?.rider_phone && existing.rider_phone !== phone) {
       return res.status(409).json({ error: 'Order already accepted by another rider' });
+    }
+
+    // Guard: only accept paid orders — don't assign rider to unpaid order
+    if (!existing || !['paid', 'ready', 'cooking'].includes(existing.status)) {
+      return res.status(400).json({ error: 'Order is not ready for rider assignment' });
     }
 
     // Fetch rider name so it shows on the customer tracking screen
@@ -567,6 +583,11 @@ router.post('/:id/confirm-pin', async (req, res) => {
       return res.json(null);
     }
 
+    // Guard: pin_hash wiped after delivery — reject immediately (must be before bcrypt)
+    if (!order.pin_hash) {
+      return res.json(null);
+    }
+
     // Lockout after 3 wrong attempts
     if (order.pin_attempts >= 3) {
       console.warn(`🔒 Order ${id} PIN locked — too many wrong attempts`);
@@ -577,11 +598,6 @@ router.post('/:id/confirm-pin', async (req, res) => {
     if (new Date() > new Date(order.pin_expires_at)) {
       console.warn(`⏰ Order ${id} PIN expired`);
       return res.status(403).json({ error: 'PIN has expired. Contact KFC Narok.' });
-    }
-
-     // Guard: pin_hash wiped after delivery — reject immediately
-    if (!order.pin_hash) {
-      return res.json(null);
     }
 
     // Compare against hash
