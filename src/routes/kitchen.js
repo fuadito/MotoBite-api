@@ -18,6 +18,12 @@ const router = express.Router();
 router.post('/verify', (req, res) => {
   const { code } = req.body;
 
+    if(!process.env.KITCHEN_CODE){
+    console.error('❌ KITCHEN_CODE env var not set in Render');
+    return res.json({ ok: false, error: 'Kitchen code not configured' });
+  }
+
+
   if (!code) {
     return res.status(400).json({ ok: false, error: 'Passcode required' });
   }
@@ -42,7 +48,7 @@ router.get('/orders', async (req, res) => {
     const { data, error } = await supabase
       .from('orders')
       .select('*')
-      .in('status', ['paid', 'cooking', 'ready', 'rider_assigned'])
+      .in('status', ['pending','paid', 'cooking', 'ready', 'rider_assigned'])
       .order('created_at', { ascending: true }); // oldest first — FIFO
 
     if (error) throw error;
