@@ -1,51 +1,42 @@
 // src/services/sms.js
-// Twilio SMS wrapper
+// Africa's Talking SMS wrapper
 // All SMS sending goes through this file
 //
 // Uses these environment variables:
-//   TWILIO_ACCOUNT_SID           — Your Twilio Account SID
-//   TWILIO_AUTH_TOKEN            — Your Twilio Auth Token
-//   TWILIO_PHONE_NUMBER          — Your Twilio phone number (fallback)
-//   TWILIO_MESSAGING_SERVICE_SID — Your Twilio Messaging Service SID (preferred)
+//   AT_USERNAME — Your Africa's Talking username (usually 'sandbox' or your app name)
+//   AT_API_KEY  — Your Africa's Talking API Key
 
-import twilio from 'twilio';
+import AfricasTalking from 'africastalking';
 
-const TWILIO_ACCOUNT_SID          = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN           = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_PHONE_NUMBER         = process.env.TWILIO_PHONE_NUMBER;
-const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
+const AT_USERNAME = process.env.AT_USERNAME;
+const AT_API_KEY = process.env.AT_API_KEY;
 
 // ✅ DEBUG LOGGING
-console.log('🔍 Twilio Environment Check:');
-console.log('   ACCOUNT_SID:', TWILIO_ACCOUNT_SID 
-  ? `${TWILIO_ACCOUNT_SID.substring(0, 10)}...` 
-  : '❌ Missing');
-console.log('   AUTH_TOKEN:', TWILIO_AUTH_TOKEN 
-  ? '✅ Set' 
-  : '❌ Missing');
-console.log('   PHONE_NUMBER:', TWILIO_PHONE_NUMBER    || '⚠️  Not set (using Messaging Service)');
-console.log('   MESSAGING_SERVICE_SID:', TWILIO_MESSAGING_SERVICE_SID 
-  ? `${TWILIO_MESSAGING_SERVICE_SID.substring(0, 10)}...` 
-  : '⚠️  Not set (falling back to phone number)');
+console.log('🔍 Africa\'s Talking Environment Check:');
+console.log('   USERNAME:', AT_USERNAME || '❌ Missing');
+console.log('   API_KEY:', AT_API_KEY ? '✅ Set' : '❌ Missing');
 
-// ─── Validate at least one sender is configured ───────────────────────────────
-if (!TWILIO_MESSAGING_SERVICE_SID && !TWILIO_PHONE_NUMBER) {
-  console.error('❌ Twilio sender not configured — set TWILIO_MESSAGING_SERVICE_SID or TWILIO_PHONE_NUMBER');
-}
+// Initialize Africa's Talking client
+let smsClient = null;
 
-// ─── Initialize Twilio client ─────────────────────────────────────────────────
-let client = null;
-
-if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-  client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-  console.log('✅ Twilio SMS client initialized');
+if (AT_USERNAME && AT_API_KEY) {
+  try {
+    const africastalking = AfricasTalking({
+      apiKey: AT_API_KEY,
+      username: AT_USERNAME
+    });
+    smsClient = africastalking.SMS;
+    console.log('✅ Africa\'s Talking SMS client initialized');
+  } catch (err) {
+    console.error('❌ Failed to initialize Africa\'s Talking:', err.message);
+  }
 } else {
-  console.warn('⚠️ Twilio credentials not set — SMS will not be sent');
+  console.warn('⚠️ Africa\'s Talking credentials not set - SMS will not be sent');
 }
 
 // ─── HELPER — phone formatter ─────────────────────────────────────────────────
 // Converts any Kenyan number to +254XXXXXXXXX format
-// Accepts: 07XXXXXXXX / 7XXXXXXXX / 2547XXXXXXXX / +2547XXXXXXXX
+// Accepts: 07XXXXXXXX  /  7XXXXXXXX  /  2547XXXXXXXX  /  +2547XXXXXXXX
 
 function formatPhone(phone) {
   const digits = String(phone).replace(/\D/g, '');
@@ -67,8 +58,8 @@ function isValidKenyanNumber(phone) {
 
 export async function sendSMS(phone, message) {
   try {
-    if (!client) {
-      console.warn('⚠️ SMS skipped — Twilio not configured');
+    if (!smsClient) {
+      console.warn('⚠️ SMS skipped — Africa\'s Talking not configured');
       return false;
     }
 
@@ -82,58 +73,42 @@ export async function sendSMS(phone, message) {
 
     console.log(`📱 Sending SMS to ${normalized}`);
 
-    // ✅ Build message params
-    // Prefer Messaging Service SID (fixes geo-permission issues)
-    // Fall back to direct phone number
-    const messageParams = {
-      body: message,
-      to: normalized,
-      ...(TWILIO_MESSAGING_SERVICE_SID
-        ? { messagingServiceSid: TWILIO_MESSAGING_SERVICE_SID }  // ✅ Preferred
-        : { from: TWILIO_PHONE_NUMBER }                          // ⚠️ Fallback
-      )
-    };
+    const result = await smsClient.send({
+      to: [normalized],
+      message: message,
+      // from: 'MotoBite'  // Optional: Set sender ID (needs approval from AT)
+    });
 
-    console.log('📤 Using sender:', TWILIO_MESSAGING_SERVICE_SID 
-      ? `Messaging Service (${TWILIO_MESSAGING_SERVICE_SID.substring(0, 10)}...)` 
-      : `Phone Number (${TWILIO_PHONE_NUMBER})`
-    );
+    console.log('📤 Africa\'s Talking response:', JSON.stringify(result, null, 2));
 
-    const result = await client.messages.create(messageParams);
-
-    const successStatuses = ['accepted', 'queued', 'sent', 'delivered'];
-
-    if (successStatuses.includes(result.status)) {
-      console.log(`✅ SMS sent to ${normalized} | SID: ${result.sid} | Status: ${result.status}`);
-      return true;
+    // Check result
+    if (result.SMSMessageData && result.SMSMessageData.Recipients) {
+      const recipient = result.SMSMessageData.Recipients[0];
+      
+      if (recipient.status === 'Success' || recipient.statusCode === 101) {
+        console.log(`✅ SMS sent to ${normalized} | MessageId: ${recipient.messageId} | Cost: ${recipient.cost}`);
+        return true;
+      } else {
+        console.warn(`⚠️ SMS failed: ${recipient.status} (${recipient.statusCode})`);
+        return false;
+      }
     } else {
-      console.warn(`⚠️ Unexpected SMS status: ${result.status} for ${normalized}`);
+      console.warn('⚠️ Unexpected response format from Africa\'s Talking');
       return false;
     }
 
   } catch (err) {
-    // ✅ Detailed error logging
     console.error('❌ SMS error:', err.message);
-    console.error('   Code:', err.code);
-    console.error('   More info:', err.moreInfo || 'N/A');
-
-    // ✅ Helpful hints per error code
-    if (err.code === 21608) {
-      console.error('   💡 Fix: This number is not verified in your Twilio trial account');
-      console.error('   💡 Go to: Twilio Console → Verified Caller IDs → Add number');
+    
+    // ✅ Helpful hints per error
+    if (err.message.includes('Invalid API key')) {
+      console.error('   💡 Fix: Check your AT_API_KEY in environment variables');
     }
-    if (err.code === 21211) {
-      console.error('   💡 Fix: Invalid "To" phone number format');
+    if (err.message.includes('username')) {
+      console.error('   💡 Fix: Check your AT_USERNAME (should be "sandbox" or your app name)');
     }
-    if (err.code === 21614) {
-      console.error('   💡 Fix: "To" number not valid for SMS');
-    }
-    if (err.code === 21215) {
-      console.error('   💡 Fix: Enable Kenya in Twilio Geo Permissions');
-      console.error('   💡 Go to: Messaging → Settings → Geo Permissions → Kenya ✅');
-    }
-    if (err.code === 20003) {
-      console.error('   💡 Fix: Invalid Twilio credentials — check ACCOUNT_SID and AUTH_TOKEN');
+    if (err.message.includes('Insufficient balance')) {
+      console.error('   💡 Fix: Add credits to your Africa\'s Talking account');
     }
 
     return false;
