@@ -19,10 +19,10 @@ function generatePIN() {
 // Format phone number
 function formatPhone(phone) {
   const digits = String(phone).replace(/\D/g, '');
-  if (digits.startsWith('254')) return digits;
-  if (digits.startsWith('0'))   return `254${digits.slice(1)}`;
-  if (digits.length === 9)      return `254${digits}`;
-  return digits;
+  if (digits.startsWith('254')) return `+{digits}`;
+  if (digits.startsWith('0'))   return `+254${digits.slice(1)}`;
+  if (digits.length === 9)      return `+254${digits}`;
+  return `+{digits}`;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -105,8 +105,8 @@ router.post('/send-otp', async (req, res) => {
     
     // Rate limiting: check if OTP was sent recently
     const existing = otpStore.get(normalizedPhone);
-    if (existing && Date.now() - existing.sentAt < 60000) {
-      const remaining = Math.ceil((60000 - (Date.now() - existing.sentAt)) / 1000);
+    if (existing && Date.now() - existing.sentAt < 30000) {
+      const remaining = Math.ceil((30000 - (Date.now() - existing.sentAt)) / 1000);
       return res.status(429).json({ 
         error: `Please wait ${remaining} seconds before requesting again` 
       });
