@@ -73,21 +73,20 @@ router.post('/login', async (req, res) => {
 
 router.get('/orders', async (req, res) => {
   try {
-    const phone = req.headers['x-user-phone'];
+    const rawPhone = req.headers['x-user-phone'];
+    if (!rawPhone) return res.status(400).json({ error: 'Phone number required' });
 
-    if (!phone) {
-      return res.status(400).json({ error: 'Phone number required' });
-    }
+    // NORMALIZE — header comes as 254XXXXXXXXX, DB stores +254XXXXXXXXX
+    const phone = formatPhone(rawPhone);
 
     const { data, error } = await supabase
       .from('orders')
       .select('*')
-      .eq('customer_phone', phone)
+      .eq('customer_phone', phone)  // now matches DB format
       .order('created_at', { ascending: false })
       .limit(20);
 
     if (error) throw error;
-
     res.json({ orders: data || [] });
 
   } catch (err) {
@@ -95,6 +94,5 @@ router.get('/orders', async (req, res) => {
     res.status(500).json({ error: 'Could not fetch orders' });
   }
 });
-
 
 export default router;

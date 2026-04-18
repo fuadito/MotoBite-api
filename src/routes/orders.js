@@ -46,7 +46,7 @@ router.post('/', async (req, res) => {
 
   try {
     const rawPhone = req.headers['x-user-phone'];
-    const phone = formatPhone(rawPhone);
+    const phone = formatPhone(req.headers['x-user-phone']);
     const { items, notes, location, mpesa_reference } = req.body;
 
     console.log('📞 Phone from header:', phone);
