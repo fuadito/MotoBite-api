@@ -40,7 +40,7 @@ router.post('/verify', (req, res) => {
 
 // GET /api/kitchen/orders
 // Returns all orders that kitchen needs to see:
-// paid (new), cooking, ready, rider_assigned
+// pending, paid (new), cooking, ready, rider_assigned
 // Called every 8 seconds by pollKitchen() in frontend
 
 router.get('/orders', async (req, res) => {

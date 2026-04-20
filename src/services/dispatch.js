@@ -135,7 +135,11 @@ export async function dispatchOrder(orderId) {
 
 export async function redispatchStaleOrders() {
   try {
-    // Find orders that have been "ready" for more than 2 minutes with no rider
+    // Find orders that have been "ready" for more than 2 minutes with no rider.
+    // We check ready_at first (set by kitchen), then fall back to updated_at.
+    // NOTE: if orders.updated_at doesn't auto-update via a Supabase trigger,
+    // add one: CREATE TRIGGER set_updated_at BEFORE UPDATE ON orders
+    //   FOR EACH ROW EXECUTE FUNCTION moddatetime(updated_at);
     const twoMinsAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
 
     const { data: staleOrders } = await supabase
@@ -143,7 +147,7 @@ export async function redispatchStaleOrders() {
       .select('id, order_number')
       .eq('status', 'ready')
       .is('rider_phone', null)
-      .lt('updated_at', twoMinsAgo);
+      .or(`ready_at.lt.${twoMinsAgo},and(ready_at.is.null,updated_at.lt.${twoMinsAgo})`);
 
     if (!staleOrders?.length) return;
 

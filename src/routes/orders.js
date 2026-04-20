@@ -198,22 +198,19 @@ router.post('/', async (req, res) => {
       error: 'Could not create order',
       details: err.message
     });
+    return; // prevent PIN send on error
   }
 
-  // Send PIN SMS (outside try/catch)
-  if (orderData && pin && orderPhone) {
-    console.log('📱 Sending PIN SMS...');
+  // Issue 8: send PIN SMS AFTER response and OUTSIDE try/catch
+  // so an SMS failure can never affect the order creation response
+  if(orderData && pin && orderPhone){
     sendDeliveryPIN(orderPhone, orderData.order_number, pin)
       .then(r => {
-        if (r) console.log(`✅ PIN SMS sent to ${orderPhone}`);
-        else console.warn(`⚠️ PIN SMS failed for ${orderPhone}`);
+        if(r) console.log(`📱 PIN SMS sent to ${orderPhone} for order ${orderData.order_number}`);
+        else  console.warn(`⚠️  PIN SMS failed for ${orderPhone}`);
       })
-      .catch(err => {
-        console.error(`❌ PIN SMS error:`, err.message);
-      });
+      .catch(e => console.warn(`⚠️  PIN SMS error:`, e.message));
   }
-  
-  console.log('='.repeat(50));
 });
 
 
