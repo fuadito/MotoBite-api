@@ -151,6 +151,26 @@ router.post('/riders/approve', async (req, res) => {
   }
 });
 
+// GET /api/admin/riders/approved
+// Returns all approved active riders
+
+router.get('/riders/approved', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('riders')
+      .select('*')
+      .eq('status', 'approved')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data || []);
+
+  } catch (err) {
+    console.error('Approved riders error:', err.message);
+    res.status(500).json({ error: 'Could not fetch riders' });
+  }
+});
+
 
 // POST /api/admin/riders/suspend
 // Admin rejects or suspends a rider — sends appropriate SMS
