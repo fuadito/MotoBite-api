@@ -17,7 +17,7 @@
 import express from 'express';
 import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
-import { sendDeliveryPIN } from '../services/sms.js';
+// sendDeliveryPIN removed — PIN SMS is sent only by admin/mark-paid route, not on order creation
 
 const router = express.Router();
 
@@ -46,7 +46,7 @@ router.post('/', async (req, res) => {
 
   try {
     const rawPhone = req.headers['x-user-phone'];
-    const phone = formatPhone(req.headers['x-user-phone']);
+    const phone = formatPhone(rawPhone);
     const { items, notes, location, mpesa_reference } = req.body;
 
     console.log('📞 Phone from header:', phone);
@@ -198,19 +198,13 @@ router.post('/', async (req, res) => {
       error: 'Could not create order',
       details: err.message
     });
-    return; // prevent PIN send on error
   }
 
-  // Issue 8: send PIN SMS AFTER response and OUTSIDE try/catch
-  // so an SMS failure can never affect the order creation response
-  if(orderData && pin && orderPhone){
-    sendDeliveryPIN(orderPhone, orderData.order_number, pin)
-      .then(r => {
-        if(r) console.log(`📱 PIN SMS sent to ${orderPhone} for order ${orderData.order_number}`);
-        else  console.warn(`⚠️  PIN SMS failed for ${orderPhone}`);
-      })
-      .catch(e => console.warn(`⚠️  PIN SMS error:`, e.message));
-  }
+  // PIN SMS intentionally NOT sent here — the admin manually confirms payment via
+  // POST /api/admin/orders/:id/mark-paid which sends the PIN SMS at the right time.
+  // Sending it here would give the customer a PIN before payment is confirmed, causing confusion.
+  
+  console.log('='.repeat(50));
 });
 
 
