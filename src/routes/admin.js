@@ -73,12 +73,16 @@ router.get('/stats', async (req, res) => {
 
 router.get('/orders', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { status, limit } = req.query;
+    let query = supabase
       .from('orders')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(parseInt(limit) || 50);
 
+    if (status) query = query.eq('status', status);
+
+    const { data, error } = await query;
     if (error) throw error;
 
     res.json({ orders: data || [] });
@@ -285,5 +289,45 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
   }
 });
 
+
+// POST /api/admin/riders/unsuspend
+// Lift a suspension — reinstates rider to approved status
+
+router.post('/riders/unsuspend', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'Phone required' });
+
+    const { error } = await supabase
+      .from('riders')
+      .update({ status: 'approved' })
+      .eq('phone', phone);
+
+    if (error) throw error;
+
+    // Fetch name for SMS
+    const { data: rider } = await supabase
+      .from('riders')
+      .select('name')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    // Notify rider their account is reinstated
+    sendRiderApproved(phone, rider?.name || 'Rider')
+      .then(r => {
+        if (!r) console.warn(`⚠️  Reinstatement SMS failed for ${phone}`);
+      });
+
+    console.log(`✅ Rider ${phone} suspension lifted — SMS sent`);
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Unsuspend rider error:', err.message);
+    res.status(500).json({ error: 'Could not lift suspension' });
+  }
+});
+
+// GET /api/admin/orders — support status filter
+// Already defined above; adding delivered filter for revenue endpoint
 
 export default router;
