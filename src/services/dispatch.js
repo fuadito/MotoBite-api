@@ -78,8 +78,14 @@ export async function dispatchOrder(orderId) {
       return { success: false, noRiders: true };
     }
 
-     console.log(`🚀 Dispatching order ${order.order_number} to ${freeRiders.length} rider(s)`);
+    // Build helper variables used in the payload below
+    const orderLat      = order.customer_lat ?? order.location?.lat ?? null;
+    const orderLng      = order.customer_lng ?? order.location?.lng ?? null;
+    const deliveryHint  = order.landmark
+      ? `${order.customer_area || 'Narok Town'} — ${order.landmark}`
+      : (order.customer_area || 'Narok Town');
 
+    console.log(`🚀 Dispatching order ${order.order_number} to ${freeRiders.length} rider(s)`);
 
       // 3. Build a clean payload — exactly what the frontend showRiderOrderAlert() needs
     //    We normalise location so the haversine distance calc works on the rider side
@@ -92,11 +98,11 @@ export async function dispatchOrder(orderId) {
       special_notes: order.special_notes || null,
       customer_area: order.customer_area || 'Narok Town',
       landmark:      order.landmark      || null,
-      delivery_hint: deliveryHint,              // ← full "Area — Landmark" string for rider UI
-         location: orderLat && orderLng
+      delivery_hint: deliveryHint,
+      location: orderLat && orderLng
         ? { lat: orderLat, lng: orderLng }
         : (order.location || null),
-      customer_lat:  orderLat,                  // ← top-level for easy haversine in rider
+      customer_lat:  orderLat,
       customer_lng:  orderLng,
       paid_at: order.paid_at || order.created_at,
     };
