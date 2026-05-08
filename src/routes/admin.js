@@ -235,16 +235,31 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Fetch order first so we know order_type (pickup vs delivery)
+    const { data: existingOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchErr || !existingOrder) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
     const security_pin = Math.floor(1000 + Math.random() * 9000).toString();
 
     // FIX: hash the PIN — confirm-pin uses bcrypt.compare against pin_hash, not security_pin
     const pinHash      = await bcrypt.hash(security_pin, 10);
     const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hrs
 
+    // Pickup orders go straight to 'ready' — no rider dispatch needed.
+    // Delivery orders become 'paid' — kitchen cooks, dispatch assigns rider.
+    const newStatus = existingOrder.order_type === 'pickup' ? 'ready' : 'paid';
+
     const { data, error } = await supabase
       .from('orders')
       .update({
-        status:         'paid',
+        status:         newStatus,
         pin_hash:       pinHash,       // FIX: store hash for bcrypt.compare in confirm-pin
         pin_expires_at: pinExpiresAt,  // FIX: without this, expiry check always fails immediately
         pin_attempts:   0,             // FIX: without this, attempt counter is null
@@ -281,7 +296,7 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
       }
     });
 
-    res.json({ success: true, order: data });
+    res.json({ success: true, pin: security_pin, order: data });
 
   } catch (err) {
     console.error('Mark paid error:', err.message);

@@ -47,7 +47,7 @@ router.post('/', async (req, res) => {
   try {
     const rawPhone = req.headers['x-user-phone'];
     const phone = formatPhone(rawPhone);
-    const { items, notes, location, mpesa_reference } = req.body;
+    const { items, notes, location, mpesa_reference, order_type } = req.body;
 
     console.log('📞 Phone from header:', phone);
     console.log('🛒 Items:', JSON.stringify(items, null, 2));
@@ -134,6 +134,7 @@ router.post('/', async (req, res) => {
       status: 'pending',
       payment_status: 'pending',
       customer_name: customerName,
+      order_type: order_type || 'delivery',  // 'delivery' | 'pickup'
     };
 
     console.log('💾 Data to insert:', JSON.stringify(insertData, null, 2));
