@@ -30,7 +30,7 @@ export async function dispatchOrder(orderId) {
       .from('orders')
       .select(`
         id, order_number, status, food_amount,
-        items, special_notes, customer_area,
+        items, special_notes, customer_area, landmark,
         customer_lat, customer_lng, location,
         created_at, paid_at
       `)
@@ -91,11 +91,13 @@ export async function dispatchOrder(orderId) {
       items:         order.items         || [],
       special_notes: order.special_notes || null,
       customer_area: order.customer_area || 'Narok Town',
-      location: order.location || (
-        order.customer_lat && order.customer_lng
-          ? { lat: order.customer_lat, lng: order.customer_lng }
-          : null
-      ),
+      landmark:      order.landmark      || null,
+      delivery_hint: deliveryHint,              // ← full "Area — Landmark" string for rider UI
+         location: orderLat && orderLng
+        ? { lat: orderLat, lng: orderLng }
+        : (order.location || null),
+      customer_lat:  orderLat,                  // ← top-level for easy haversine in rider
+      customer_lng:  orderLng,
       paid_at: order.paid_at || order.created_at,
     };
 

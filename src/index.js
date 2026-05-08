@@ -46,6 +46,15 @@ app.get('/health', (req, res) => {
   });
 });
 
+
+setInterval(async () => {
+  try {
+    await fetch(`${process.env.BACKEND_URL || 'http://localhost:3000'}/health`);
+    console.log('🏓 Keep-alive ping sent');
+  } catch(e) {}
+}, 14 * 60 * 1000); // ping every 14 minutes
+
+
 // ROUTES
 // Each role has its own route file in src/routes/
 

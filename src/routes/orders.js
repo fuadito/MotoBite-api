@@ -126,6 +126,7 @@ router.post('/', async (req, res) => {
       customer_lng: location?.lng || null,
       location: location || null,
       customer_area: location?.areaName || location?.area || 'Narok Town',
+      landmark:      location?.landmark || null,   // ← human-readable delivery hint for rider
       mpesa_reference: mpesa_reference || null,
       pin_hash: pin_hash,
       pin_expires_at: pin_expires_at,

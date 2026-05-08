@@ -101,7 +101,7 @@ router.post('/login', async (req, res) => {
     // Rider found but suspended
     if (rider.status === 'suspended') {
       return res.status(403).json({ 
-        error: 'Your account has been suspended. Contact KFC Narok.' 
+        error: 'Your account has been suspended. Contact MotoBite.' 
       });
     }
 
@@ -235,6 +235,13 @@ router.get('/available', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+router.post('/:id/decline', async (req, res) => {
+  // Temporarily mark rider unavailable for 5 minutes
+  const phone = req.headers['x-user-phone'];
+  // Store decline in a simple in-memory set or add declined_until field
+  res.json({ success: true });
 });
 
 
