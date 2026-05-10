@@ -17,6 +17,7 @@
 import express from 'express';
 import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
+import { submitPesapalOrder, getTransactionStatus } from '../services/pesapal.js';
 // sendDeliveryPIN removed — PIN SMS is sent only by admin/mark-paid route, not on order creation
 
 const router = express.Router();
@@ -47,7 +48,7 @@ router.post('/', async (req, res) => {
   try {
     const rawPhone = req.headers['x-user-phone'];
     const phone = formatPhone(rawPhone);
-    const { items, notes, location, mpesa_reference, order_type } = req.body;
+    const { items, notes, location, mpesa_reference } = req.body;
 
     console.log('📞 Phone from header:', phone);
     console.log('🛒 Items:', JSON.stringify(items, null, 2));
@@ -134,7 +135,6 @@ router.post('/', async (req, res) => {
       status: 'pending',
       payment_status: 'pending',
       customer_name: customerName,
-      order_type: order_type || 'delivery',  // 'delivery' | 'pickup'
     };
 
     console.log('💾 Data to insert:', JSON.stringify(insertData, null, 2));
@@ -629,6 +629,125 @@ router.post('/:id/confirm-pin', async (req, res) => {
   } catch (err) {
     console.error('Confirm PIN error:', err.message);
     res.status(500).json({ error: 'Could not confirm delivery' });
+  }
+});
+
+
+// ── PESAPAL ROUTES ────────────────────────────────────────────────────────────
+// NOTE: /pesapal-ipn MUST be declared before /:id routes — Express matches
+// literal path segments before parameters, but being explicit prevents bugs.
+
+// POST /api/orders/pesapal-ipn
+// Pesapal calls this URL when a payment status changes (IPN = Instant Payment Notification).
+// We verify the transaction status with Pesapal's API, then mark the order paid.
+
+router.post('/pesapal-ipn', async (req, res) => {
+  try {
+    const { OrderTrackingId, OrderMerchantReference, OrderNotificationType } = req.body;
+
+    console.log(`📡 Pesapal IPN received — ref: ${OrderMerchantReference}, tracking: ${OrderTrackingId}`);
+
+    // Always respond 200 immediately — Pesapal retries if we don't
+    res.json({ orderNotificationType: OrderNotificationType, orderTrackingId: OrderTrackingId, status: '200' });
+
+    // Verify transaction status with Pesapal
+    const txStatus = await getTransactionStatus(OrderTrackingId);
+    console.log(`📡 Pesapal tx status: ${txStatus.payment_status_description} (code ${txStatus.status_code})`);
+
+    // status_code 1 = Completed — only update DB on confirmed payment
+    if (txStatus.status_code !== 1) {
+      console.log(`⚠️  IPN ignored — payment not completed (status: ${txStatus.payment_status_description})`);
+      return;
+    }
+
+    // Find the order by merchant reference (MB-{orderNumber}-{orderId})
+    const parts   = (OrderMerchantReference || '').split('-');
+    const orderId = parts[parts.length - 1]; // last segment is the DB id
+
+    if (!orderId || isNaN(orderId)) {
+      console.error('IPN: could not parse order ID from reference:', OrderMerchantReference);
+      return;
+    }
+
+    // Fetch order to know order_type (pickup → ready, delivery → paid)
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, status, order_type, order_number')
+      .eq('id', orderId)
+      .single();
+
+    if (!order) { console.error(`IPN: order ${orderId} not found`); return; }
+
+    // Idempotency — don't double-process if already paid
+    if (order.status !== 'pending') {
+      console.log(`IPN: order ${order.order_number} already at status '${order.status}' — skipping`);
+      return;
+    }
+
+    const newStatus = order.order_type === 'pickup' ? 'ready' : 'paid';
+
+    await supabase
+      .from('orders')
+      .update({
+        status:          newStatus,
+        payment_method:  'card',
+        pesapal_tx_id:   OrderTrackingId,
+        mpesa_reference: `PESAPAL-${OrderTrackingId}`, // admin display
+        paid_at:         new Date().toISOString(),
+        pin_attempts:    0
+      })
+      .eq('id', orderId);
+
+    console.log(`✅ Pesapal IPN — Order ${order.order_number} → ${newStatus}`);
+
+  } catch (err) {
+    console.error('Pesapal IPN error:', err.message);
+    // Response already sent — just log
+  }
+});
+
+
+// POST /api/orders/:id/pesapal-checkout
+// Called by the frontend when customer chooses card payment.
+// Creates a Pesapal payment session and returns the hosted payment URL.
+
+router.post('/:id/pesapal-checkout', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('id, order_number, food_amount, customer_name, customer_phone, status')
+      .eq('id', id)
+      .single();
+
+    if (error || !order) return res.status(404).json({ error: 'Order not found' });
+
+    // Prevent duplicate checkouts on already-paid orders
+    if (order.status !== 'pending') {
+      return res.status(409).json({ error: `Order already ${order.status}` });
+    }
+
+    const { redirectUrl, trackingId, merchantRef } = await submitPesapalOrder({
+      orderId:       order.id,
+      orderNumber:   order.order_number,
+      amount:        order.food_amount,
+      customerName:  order.customer_name,
+      customerPhone: order.customer_phone
+    });
+
+    // Store the Pesapal tracking ID so admin can look it up in disputes
+    await supabase
+      .from('orders')
+      .update({ pesapal_tx_id: trackingId, payment_method: 'card' })
+      .eq('id', id);
+
+    console.log(`💳 Pesapal checkout created — Order ${order.order_number} → ${trackingId}`);
+    res.json({ redirectUrl, trackingId, merchantRef });
+
+  } catch (err) {
+    console.error('Pesapal checkout error:', err.message);
+    res.status(500).json({ error: 'Could not create payment session — try M-Pesa instead' });
   }
 });
 

@@ -235,55 +235,62 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch order first so we know order_type (pickup vs delivery)
-    const { data: existingOrder, error: fetchErr } = await supabase
+    // Fetch the order first — we need order_type to decide PIN and SMS behaviour
+    const { data: existing, error: fetchErr } = await supabase
       .from('orders')
       .select('*')
       .eq('id', id)
       .single();
 
-    if (fetchErr || !existingOrder) {
+    if (fetchErr || !existing) {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    const security_pin = Math.floor(1000 + Math.random() * 9000).toString();
+    const isPickup = existing.order_type === 'pickup';
 
-    // FIX: hash the PIN — confirm-pin uses bcrypt.compare against pin_hash, not security_pin
-    const pinHash      = await bcrypt.hash(security_pin, 10);
-    const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hrs
+    // Both delivery and pickup go to 'paid' — kitchen still needs to cook the food.
+    // The difference comes at the end: delivery gets a rider + PIN, pickup gets neither.
+    const updatePayload = {
+      status:   'paid',
+      paid_at:  new Date().toISOString(),
+    };
 
-    // Pickup orders go straight to 'ready' — no rider dispatch needed.
-    // Delivery orders become 'paid' — kitchen cooks, dispatch assigns rider.
-    const newStatus = existingOrder.order_type === 'pickup' ? 'ready' : 'paid';
+    // Only delivery orders need a PIN (rider uses it to confirm hand-off to customer).
+    // Pickup customers collect at the counter — no rider, no PIN needed.
+    let security_pin = null;
+    if (!isPickup) {
+      security_pin           = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash          = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt     = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      updatePayload.pin_hash       = pinHash;
+      updatePayload.pin_expires_at = pinExpiresAt;
+      updatePayload.pin_attempts   = 0;
+    }
 
     const { data, error } = await supabase
       .from('orders')
-      .update({
-        status:         newStatus,
-        pin_hash:       pinHash,       // FIX: store hash for bcrypt.compare in confirm-pin
-        pin_expires_at: pinExpiresAt,  // FIX: without this, expiry check always fails immediately
-        pin_attempts:   0,             // FIX: without this, attempt counter is null
-        paid_at:        new Date().toISOString()
-      })
+      .update(updatePayload)
       .eq('id', id)
       .select()
       .single();
 
     if (error) throw error;
 
-    console.log(`✅ Order ${data.order_number} marked as paid. PIN: ${security_pin}`);
-
-    // FIX: use shared sendDeliveryPIN — all SMS credentials stay in env vars
-    if (data.customer_phone) {
-      sendDeliveryPIN(data.customer_phone, data.order_number, security_pin)
-        .then(r => {
-          if (!r) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}`);
-          else    console.log(`📱 PIN SMS sent to ${data.customer_phone}`);
-        });
+    if (isPickup) {
+      console.log(`✅ Pickup order ${data.order_number} marked as paid — no PIN needed`);
+    } else {
+      console.log(`✅ Delivery order ${data.order_number} marked as paid. PIN: ${security_pin}`);
+      // Send PIN via SMS only for delivery orders
+      if (data.customer_phone) {
+        sendDeliveryPIN(data.customer_phone, data.order_number, security_pin)
+          .then(r => {
+            if (!r) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}`);
+            else    console.log(`📱 PIN SMS sent to ${data.customer_phone}`);
+          });
+      }
     }
 
-    // Notify kitchen via Supabase Realtime
-    // FIX: must subscribe before sending — same pattern as dispatch.js
+    // Notify kitchen via Supabase Realtime — same for both types
     const channel = supabase.channel('kitchen-orders');
     await channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
@@ -296,7 +303,7 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
       }
     });
 
-    res.json({ success: true, pin: security_pin, order: data });
+    res.json({ success: true, pin: security_pin, isPickup, order: data });
 
   } catch (err) {
     console.error('Mark paid error:', err.message);
