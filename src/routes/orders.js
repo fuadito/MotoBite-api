@@ -743,7 +743,7 @@ router.post('/:id/pesapal-checkout', async (req, res) => {
       .eq('id', id);
 
     console.log(`💳 Pesapal checkout created — Order ${order.order_number} → ${trackingId}`);
-    res.json({ redirectUrl, trackingId, merchantRef });
+    res.json({ redirectUrl, trackingId, merchantRef, orderNumber: order.order_number });
 
   } catch (err) {
     console.error('Pesapal checkout error:', err.message);
