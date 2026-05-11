@@ -11,7 +11,7 @@
 // Production base: https://pay.pesapal.com/v3
 
 const BASE = process.env.PESAPAL_ENV === 'production'
-  ? 'https://pay.pesapal.com/v3'
+  ? 'https://cybqa.pesapal.com/pesapalv3/api/Transactions/SubmitOrderRequest'
   : 'https://cybqa.pesapal.com/pesapalv3';
 
 // ── Token cache — tokens are valid for ~5 minutes ─────────────────────────────
