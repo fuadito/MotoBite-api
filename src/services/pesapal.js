@@ -11,7 +11,7 @@
 // Production base: https://pay.pesapal.com/v3
 
 const BASE = process.env.PESAPAL_ENV === 'production'
-  ? 'https://cybqa.pesapal.com/pesapalv3/api/Transactions/SubmitOrderRequest'
+  ? 'https://pay.pesapal.com/v3'
   : 'https://cybqa.pesapal.com/pesapalv3';
 
 // ── Token cache — tokens are valid for ~5 minutes ─────────────────────────────
@@ -25,19 +25,36 @@ let _ipnId = process.env.PESAPAL_IPN_ID || null;
 // ── Helper ────────────────────────────────────────────────────────────────────
 async function pesapalFetch(path, options = {}) {
   const url = `${BASE}${path}`;
-  const res  = await fetch(url, {
+
+  const res = await fetch(url, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
-      'Accept':       'application/json',
+      "Content-Type": "application/json",
+      "Accept": "application/json",
       ...(options.headers || {})
     }
   });
-  const data = await res.json();
-  // Pesapal uses status '200' (string) in body for success, not HTTP status codes
-  if (data.error?.code) {
-    throw new Error(`Pesapal error [${path}]: ${data.error.message || JSON.stringify(data.error)}`);
+
+  const text = await res.text();
+
+  console.log("Pesapal URL:", url);
+  console.log("Pesapal raw response:", text);
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `Pesapal returned non-JSON. URL: ${url}\nResponse: ${text.slice(0, 300)}`
+    );
   }
+
+  if (data.error?.code) {
+    throw new Error(
+      `Pesapal error [${path}]: ${data.error.message || JSON.stringify(data.error)}`
+    );
+  }
+
   return data;
 }
 
