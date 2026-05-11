@@ -122,7 +122,7 @@ export async function submitPesapalOrder({ orderId, orderNumber, amount, custome
   // The real payment detection happens via IPN + polling, not the callback redirect.
   const callbackUrl = `${process.env.APP_URL}/pesapal-return`;
 
-  const data = await pesapalFetch('/api/Merchant/SubmitOrderRequest', {
+  const data = await pesapalFetch('/api/Transactions/SubmitOrderRequest', {
     method:  'POST',
     headers: { Authorization: `Bearer ${token}` },
     body:    JSON.stringify({
