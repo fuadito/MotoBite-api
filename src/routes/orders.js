@@ -503,7 +503,7 @@ router.post('/:id/rate', async (req, res) => {
     // Get the order to find rider phone
     const { data: order } = await supabase
       .from('orders')
-      .select('rider_phone')
+      .select('rider_phone, order_type')
       .eq('id', id)
       .single();
 
@@ -515,7 +515,7 @@ router.post('/:id/rate', async (req, res) => {
         customer_phone: phone,
         rider_phone:    order?.rider_phone || null,
         food_stars:     foodStars,
-        rider_stars:    riderStars
+        rider_stars:    riderStars || null,
       });
 
     if (error) throw error;
