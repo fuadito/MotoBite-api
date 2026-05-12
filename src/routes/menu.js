@@ -18,16 +18,24 @@ const router = express.Router();
 
 // GET /api/menu
 // Returns all available menu items grouped by category
-// Called by renderMenu() in the frontend
+// ?all=true → admin mode returns all items including hidden ones (for menu management)
+// (no param) → customer mode returns only available items for ordering
 
 router.get('/', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const isAdmin = req.query.all === 'true';
+    
+    let query = supabase
       .from('menu_items')
       .select('*')
-      .eq('available', true)
       .order('category',   { ascending: true })
       .order('sort_order', { ascending: true });
+
+      // customers only see available items, admins see everything for management purposes
+    if (!isAdmin) {
+      query = query.eq('available', true);
+    }
+    const { data, error } = await query;
 
     if (error) throw error;
 
@@ -37,6 +45,12 @@ router.get('/', async (req, res) => {
       if (!grouped[item.category]) grouped[item.category] = [];
       grouped[item.category].push(item);
     });
+
+      console.log(
+      isAdmin
+        ? `📋 Admin menu fetch — ${data?.length || 0} total items`
+        : `🍗 Customer menu fetch — ${data?.length || 0} available items`
+    );
 
     res.json(grouped);
 
@@ -54,6 +68,10 @@ router.patch('/:id', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const { available } = req.body;
+
+    if (typeof available !== 'boolean') {
+      return res.status(400).json({ error: 'Available must be boolean' });
+    }
 
     const { error } = await supabase
       .from('menu_items')
@@ -121,11 +139,15 @@ router.put('/:id', authenticate, adminOnly, async (req, res) => {
     const { name, category, price, description, img } = req.body;
 
     const updates = {};
-    if (name)        updates.name        = name;
-    if (category)    updates.category    = category;
-    if (price)       updates.price       = parseInt(price);
-    if (description) updates.description = description;
-    if (img)         updates.img         = img;
+    if (name !== undefined)        updates.name        = name;
+    if (category !== undefined)    updates.category    = category;
+    if (price !== undefined)       updates.price       = parseInt(price);
+    if (description !== undefined) updates.description = description;
+    if (img !== undefined)         updates.img         = img;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
 
     const { error } = await supabase
       .from('menu_items')
@@ -150,14 +172,21 @@ router.delete('/:id', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('menu_items')
-      .delete()
-      .eq('id', id);
+      .delete()  // ask supabase to return number of deleted rows
+      .eq('id', id)
+      .select(); // return deleted row(s) to confirm it existed
 
     if (error) throw error;
 
-    console.log(`🗑️  Menu item ${id} deleted`);
+    // if nothing was deleted, the ID didn't exist
+    if(!data || data.length ===0) {
+      console.warn(`⚠️  Attempted to delete non-existent menu item ${id}`);
+      return res.status(404).json({ success: false, error: 'Item not found' });
+    }
+
+    console.log(`🗑️  Menu item ${id} (${data[0]?.name}) deleted`);
     res.json({ success: true });
 
   } catch (err) {
