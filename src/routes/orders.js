@@ -228,7 +228,7 @@ router.get('/history', async (req, res) => {
 
     const { data, error } = await supabase
       .from('orders')
-      .select('id, order_number, status, food_amount, items, created_at, customer_area')
+      .select('id, order_number, status, food_amount, items, created_at, customer_area, order_type')
       .eq('customer_phone', phone)
       .order('created_at', { ascending: false })
       .limit(20);
