@@ -659,103 +659,102 @@ router.post('/:id/confirm-pin', async (req, res) => {
 // POST /api/orders/pesapal-ipn
 // Pesapal calls this URL when a payment status changes (IPN = Instant Payment Notification).
 // We verify the transaction status with Pesapal's API, then mark the order paid.
-
 router.post('/pesapal-ipn', async (req, res) => {
   try {
     const { OrderTrackingId, OrderMerchantReference, OrderNotificationType } = req.body;
 
     console.log(`📡 Pesapal IPN received — ref: ${OrderMerchantReference}, tracking: ${OrderTrackingId}`);
 
-    // Always respond 200 immediately — Pesapal retries if we don't
-    res.json({ orderNotificationType: OrderNotificationType, orderTrackingId: OrderTrackingId, status: '200' });
+    // ✅ Always respond 200 immediately — Pesapal retries if we don't
+    res.json({ 
+      orderNotificationType: OrderNotificationType, 
+      orderTrackingId:       OrderTrackingId, 
+      status:                '200' 
+    });
 
     // Verify transaction status with Pesapal
     const txStatus = await getTransactionStatus(OrderTrackingId);
     console.log(`📡 Pesapal tx status: ${txStatus.payment_status_description} (code ${txStatus.status_code})`);
 
-    // status_code 1 = Completed — only update DB on confirmed payment
+    // status_code 1 = Completed only
     if (txStatus.status_code !== 1) {
-      console.log(`⚠️  IPN ignored — payment not completed (status: ${txStatus.payment_status_description})`);
+      console.log(`⚠️  IPN ignored — payment not completed (${txStatus.payment_status_description})`);
       return;
     }
-const isPickup = order.order_type === 'pickup';
-let pin_hash_update = {};
-let security_pin = null;
 
-if (!isPickup) {
-  security_pin             = Math.floor(1000 + Math.random() * 9000).toString();
-  const pinHash            = await bcrypt.hash(security_pin, 10);
-  const pinExpiresAt       = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-  pin_hash_update = { pin_hash: pinHash, pin_expires_at: pinExpiresAt, pin_attempts: 0 };
-}
-
-await supabase
-  .from('orders')
-  .update({
-    status:          'paid',
-    payment_method:  'card',
-    pesapal_tx_id:   OrderTrackingId,
-    mpesa_reference: `PESAPAL-${OrderTrackingId}`,
-    paid_at:         new Date().toISOString(),
-    ...pin_hash_update
-  })
-  .eq('id', orderId);
-
-// Send PIN SMS for delivery orders only
-if (!isPickup && security_pin) {
-  const { data: fullOrder } = await supabase
-    .from('orders').select('customer_phone, order_number').eq('id', orderId).single();
-  if (fullOrder?.customer_phone) {
-    sendDeliveryPIN(fullOrder.customer_phone, fullOrder.order_number, security_pin)
-      .then(r => { if (!r) console.warn(`⚠️  PIN SMS failed for order ${fullOrder.order_number}`); });
-  }
-}
-    // Find the order by merchant reference (MB-{orderNumber}-{orderId})
+    // Parse order ID from merchant reference MB-{orderNumber}-{orderId}
     const parts   = (OrderMerchantReference || '').split('-');
-    const orderId = parts[parts.length - 1]; // last segment is the DB id
+    const orderId = parts[parts.length - 1];
 
     if (!orderId || isNaN(orderId)) {
       console.error('IPN: could not parse order ID from reference:', OrderMerchantReference);
       return;
     }
 
-    // Fetch order to know order_type (pickup → ready, delivery → paid)
+    // Fetch order
     const { data: order } = await supabase
       .from('orders')
-      .select('id, status, order_type, order_number')
+      .select('id, status, order_type, order_number, customer_phone')
       .eq('id', orderId)
       .single();
 
-    if (!order) { console.error(`IPN: order ${orderId} not found`); return; }
+    if (!order) { 
+      console.error(`IPN: order ${orderId} not found`); 
+      return; 
+    }
 
-    // Idempotency — don't double-process if already paid
+    // Idempotency — skip if already processed
     if (order.status !== 'pending') {
-      console.log(`IPN: order ${order.order_number} already at status '${order.status}' — skipping`);
+      console.log(`IPN: order ${order.order_number} already '${order.status}' — skipping`);
       return;
     }
 
-    const newStatus = order.order_type === 'paid';
+    const isPickup  = order.order_type === 'pickup';
+    const newStatus = isPickup ? 'ready' : 'paid';
+
+    // ✅ Build update payload with payment_status
+    const updatePayload = {
+      status:          newStatus,
+      payment_status:  'paid',                    // ✅ FIXED — was missing
+      payment_method:  'card',
+      pesapal_tx_id:   OrderTrackingId,
+      mpesa_reference: `PESAPAL-${OrderTrackingId}`,
+      paid_at:         new Date().toISOString(),
+      updated_at:      new Date().toISOString(),
+      pin_attempts:    0,
+    };
+
+    // ✅ Generate PIN for delivery orders only
+    let security_pin = null;
+    if (!isPickup) {
+      security_pin                     = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash                    = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt               = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      updatePayload.pin_hash           = pinHash;
+      updatePayload.pin_expires_at     = pinExpiresAt;
+    }
 
     await supabase
       .from('orders')
-      .update({
-        status:          newStatus,
-        payment_method:  'card',
-        pesapal_tx_id:   OrderTrackingId,
-        mpesa_reference: `PESAPAL-${OrderTrackingId}`, // admin display
-        paid_at:         new Date().toISOString(),
-        pin_attempts:    0
-      })
+      .update(updatePayload)
       .eq('id', orderId);
 
-    console.log(`✅ Pesapal IPN — Order ${order.order_number} → ${newStatus}`);
+    console.log(`✅ Pesapal IPN — Order ${order.order_number} → ${newStatus} | payment_status → paid`);
+
+    // ✅ Send PIN SMS for delivery orders
+    if (!isPickup && security_pin && order.customer_phone) {
+      sendDeliveryPIN(order.customer_phone, order.order_number, security_pin)
+        .then(r => {
+          if (!r) console.warn(`⚠️  PIN SMS failed for ${order.order_number}`);
+          else    console.log(`📱 PIN SMS sent to ${order.customer_phone}`);
+        });
+    }
 
   } catch (err) {
     console.error('Pesapal IPN error:', err.message);
     // Response already sent — just log
   }
 });
-
 
 // POST /api/orders/:id/pesapal-checkout
 // Called by the frontend when customer chooses card payment.

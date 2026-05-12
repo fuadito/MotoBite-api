@@ -84,7 +84,7 @@ router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
   const { data, error } = await supabase
     .from('orders')
     .select('id, food_amount, delivery_fee, created_at, status')
-    .in('status', ['delivered', 'ready', 'paid', 'cooking', 'rider_assigned', 'picked_up ']) // include paid but not yet delivered for more accurate revenue tracking
+    .in('status', ['delivered', 'ready', 'paid', 'cooking', 'rider_assigned', 'picked_up']) // include paid but not yet delivered for more accurate revenue tracking
     .gte('created_at', since.toISOString())
     .order('created_at', { ascending: false });
     
@@ -292,87 +292,96 @@ router.post('/riders/suspend', async (req, res) => {
 // POST /api/admin/orders/:id/mark-paid
 // Admin manually confirms payment — moves order from pending to paid
 // FIX: route must be /orders/:id/mark-paid to match frontend call /api/admin/orders/:id/mark-paid
-
-router.post('/orders/:id/mark-paid', async (req, res) => {
+router.post('/orders/:id/mark-paid', authenticate, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch the order first — we need order_type to decide PIN and SMS behaviour
-    const { data: existing, error: fetchErr } = await supabase
+    // ✅ Step 1: Fetch the order FIRST — read only, no update yet
+    const { data: existingOrder, error: fetchError } = await supabase
       .from('orders')
-      .select('*')
+      .select('id, order_number, order_type, customer_phone, status')
       .eq('id', id)
       .single();
 
-    if (fetchErr || !existing) {
+    if (fetchError || !existingOrder) {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    const isPickup = existing.order_type === 'pickup';
+    // Guard — don't re-process already paid orders
+    if (existingOrder.status !== 'pending') {
+      return res.status(409).json({ 
+        error: `Order is already '${existingOrder.status}' — cannot mark as paid again` 
+      });
+    }
 
-    // Both delivery and pickup go to 'paid' — kitchen still needs to cook the food.
-    // The difference comes at the end: delivery gets a rider + PIN, pickup gets neither.
+    const isPickup = existingOrder.order_type === 'pickup';
+
+    // ✅ Step 2: Build update payload
     const updatePayload = {
-      status:   'paid',
-      paid_at:  new Date().toISOString(),
+      status:          'paid',
+      payment_status:  'paid',                    // ✅ FIX — was missing
+      paid_at:         new Date().toISOString(),
+      updated_at:      new Date().toISOString(),
     };
 
-    // Only delivery orders need a PIN (rider uses it to confirm hand-off to customer).
-    // Pickup customers collect at the counter — no rider, no PIN needed.
+    // ✅ Step 3: Generate PIN for delivery orders only
     let security_pin = null;
     if (!isPickup) {
-      security_pin           = Math.floor(1000 + Math.random() * 9000).toString();
-      const pinHash          = await bcrypt.hash(security_pin, 10);
-      const pinExpiresAt     = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      security_pin                 = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash                = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt           = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
       updatePayload.pin_hash       = pinHash;
       updatePayload.pin_expires_at = pinExpiresAt;
       updatePayload.pin_attempts   = 0;
     }
 
-    const { data, error } = await supabase
+    // ✅ Step 4: Single update with full payload
+    const { data: updatedOrder, error: updateError } = await supabase
       .from('orders')
       .update(updatePayload)
       .eq('id', id)
       .select()
       .single();
 
-    if (error) throw error;
+    if (updateError) throw updateError;
 
-    if (isPickup) {
-      console.log(`✅ Pickup order ${data.order_number} marked as paid — no PIN needed`);
+    // ✅ Step 5: Send PIN SMS for delivery only
+    if (!isPickup && security_pin && updatedOrder.customer_phone) {
+      sendDeliveryPIN(updatedOrder.customer_phone, updatedOrder.order_number, security_pin)
+        .then(r => {
+          if (!r) console.warn(`⚠️  PIN SMS failed for order ${updatedOrder.order_number}`);
+          else    console.log(`📱 PIN SMS sent to ${updatedOrder.customer_phone}`);
+        });
+      console.log(`✅ Delivery order ${updatedOrder.order_number} marked paid — PIN: ${security_pin}`);
     } else {
-      console.log(`✅ Delivery order ${data.order_number} marked as paid. PIN: ${security_pin}`);
-      // Send PIN via SMS only for delivery orders
-      if (data.customer_phone) {
-        sendDeliveryPIN(data.customer_phone, data.order_number, security_pin)
-          .then(r => {
-            if (!r) console.warn(`⚠️  PIN SMS failed for order ${data.order_number}`);
-            else    console.log(`📱 PIN SMS sent to ${data.customer_phone}`);
-          });
-      }
+      console.log(`✅ Pickup order ${updatedOrder.order_number} marked paid — no PIN needed`);
     }
 
-    // Notify kitchen via Supabase Realtime — same for both types
+    // ✅ Step 6: Notify kitchen via Realtime
     const channel = supabase.channel('kitchen-orders');
     await channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await channel.send({
           type:    'broadcast',
           event:   'order_paid',
-          payload: data
+          payload: updatedOrder
         });
         await channel.unsubscribe();
       }
     });
 
-    res.json({ success: true, pin: security_pin, isPickup, order: data });
+    res.json({ 
+      success:  true, 
+      pin:      security_pin, 
+      isPickup, 
+      order:    updatedOrder 
+    });
 
   } catch (err) {
     console.error('Mark paid error:', err.message);
     res.status(500).json({ error: 'Could not mark as paid' });
   }
 });
-
 
 // POST /api/admin/riders/unsuspend
 // Lift a suspension — reinstates rider to approved status
