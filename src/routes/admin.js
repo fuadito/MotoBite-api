@@ -79,14 +79,14 @@ router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
   // Calculate date range
   const since = new Date();
   since.setDate(since.getDate() - days);
-  const sinceISO = since.toISOString();
+  
 
   const { data, error } = await supabase
     .from('orders')
     .select('id, food_amount, delivery_fee, created_at, status')
     .in('status', ['delivered', 'ready', 'paid', 'cooking', 'rider_assigned', 'picked_up ']) // include paid but not yet delivered for more accurate revenue tracking
-    .gte('created_at', sinceISO)
-    .order('created_at', { ascending: true });
+    .gte('created_at', since.toISOString())
+    .order('created_at', { ascending: false });
     
   if (error) throw error; 
 
@@ -104,8 +104,9 @@ router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
       };
     }
 
-    const food = order.food_amount || 0;
-    const delivery = order.delivery_fee || 0;
+    const food = Number(order.food_amount) || 0;
+    const delivery = Number(order.delivery_fee) || 0;
+
     byDate[date].orders += 1;
     byDate[date].food_revenue += food;
     byDate[date].delivery_revenue += delivery;
@@ -113,9 +114,11 @@ router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
   });
 
   // Convert to array and sort by date ascending
-  const history = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+  const history = Object.values(byDate).sort((a, b) => b.date.localeCompare(a.date));
 
-  const grandTotal = history.reduce((s, d) => s + d.total, 0);
+  const grand_total = history.reduce((s, d) => s + (d.total || 0), 0);
+
+  console.log(`📈 Revenue history fetched for past ${days} days — ${history.length} days, grand total ${grand_total}`);
 
     res.json({ history, grand_total, days });
     
