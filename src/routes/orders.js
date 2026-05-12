@@ -262,6 +262,12 @@ router.get('/:id', async (req, res) => {
     if (error || !data) {
       return res.status(404).json({ error: 'Order not found' });
     }
+// check if order has been rated and include that in the response (used to disable rating button in frontend if already rated)
+    const { data: rating } = await supabase 
+      .from('ratings')
+      .select('id')
+      .eq('order_id', id)
+      .maybeSingle();
 
     // Fetch rider location separately (avoids requiring a FK relationship)
     let rider_lat = null, rider_lng = null, rider_name = data.rider_name || null, rider_rating = data.rider_rating || null;
@@ -279,7 +285,7 @@ router.get('/:id', async (req, res) => {
       }
     }
 
-    res.json({ ...data, rider_lat, rider_lng, rider_name, rider_rating });
+    res.json({ ...data, rider_lat, rider_lng, rider_name, rider_rating , rated: !!rating });
 
   } catch (err) {
     console.error('Get order error:', err.message);
