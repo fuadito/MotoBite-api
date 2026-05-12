@@ -18,8 +18,8 @@ import express from 'express';
 import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
 import { submitPesapalOrder, getTransactionStatus } from '../services/pesapal.js';
-// sendDeliveryPIN removed — PIN SMS is sent only by admin/mark-paid route, not on order creation
 
+import { sendDeliveryPIN } from '../services/sms.js';
 const router = express.Router();
 
 function formatPhone(phone) {
@@ -48,7 +48,7 @@ router.post('/', async (req, res) => {
   try {
     const rawPhone = req.headers['x-user-phone'];
     const phone = formatPhone(rawPhone);
-    const { items, notes, location, mpesa_reference } = req.body;
+    const { items, notes, location, mpesa_reference, order_type } = req.body;
 
     console.log('📞 Phone from header:', phone);
     console.log('🛒 Items:', JSON.stringify(items, null, 2));
@@ -135,6 +135,7 @@ router.post('/', async (req, res) => {
       status: 'pending',
       payment_status: 'pending',
       customer_name: customerName,
+      order_type: order_type || 'delivery'
     };
 
     console.log('💾 Data to insert:', JSON.stringify(insertData, null, 2));
@@ -495,9 +496,9 @@ router.post('/:id/rate', async (req, res) => {
     const phone = formatPhone(rawPhone);
     const { foodStars, riderStars } = req.body;
 
-    if (!foodStars || !riderStars) {
-      return res.status(400).json({ error: 'Both ratings required' });
-    }
+    if (!foodStars) {
+  return res.status(400).json({ error: 'Food rating required' });
+}
 
     // Get the order to find rider phone
     const { data: order } = await supabase
@@ -659,7 +660,38 @@ router.post('/pesapal-ipn', async (req, res) => {
       console.log(`⚠️  IPN ignored — payment not completed (status: ${txStatus.payment_status_description})`);
       return;
     }
+const isPickup = order.order_type === 'pickup';
+let pin_hash_update = {};
+let security_pin = null;
 
+if (!isPickup) {
+  security_pin             = Math.floor(1000 + Math.random() * 9000).toString();
+  const pinHash            = await bcrypt.hash(security_pin, 10);
+  const pinExpiresAt       = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  pin_hash_update = { pin_hash: pinHash, pin_expires_at: pinExpiresAt, pin_attempts: 0 };
+}
+
+await supabase
+  .from('orders')
+  .update({
+    status:          'paid',
+    payment_method:  'card',
+    pesapal_tx_id:   OrderTrackingId,
+    mpesa_reference: `PESAPAL-${OrderTrackingId}`,
+    paid_at:         new Date().toISOString(),
+    ...pin_hash_update
+  })
+  .eq('id', orderId);
+
+// Send PIN SMS for delivery orders only
+if (!isPickup && security_pin) {
+  const { data: fullOrder } = await supabase
+    .from('orders').select('customer_phone, order_number').eq('id', orderId).single();
+  if (fullOrder?.customer_phone) {
+    sendDeliveryPIN(fullOrder.customer_phone, fullOrder.order_number, security_pin)
+      .then(r => { if (!r) console.warn(`⚠️  PIN SMS failed for order ${fullOrder.order_number}`); });
+  }
+}
     // Find the order by merchant reference (MB-{orderNumber}-{orderId})
     const parts   = (OrderMerchantReference || '').split('-');
     const orderId = parts[parts.length - 1]; // last segment is the DB id
@@ -684,7 +716,7 @@ router.post('/pesapal-ipn', async (req, res) => {
       return;
     }
 
-    const newStatus = order.order_type === 'pickup' ? 'ready' : 'paid';
+    const newStatus = order.order_type === 'paid';
 
     await supabase
       .from('orders')
@@ -747,7 +779,7 @@ router.post('/:id/pesapal-checkout', async (req, res) => {
 
   } catch (err) {
     console.error('Pesapal checkout error:', err.message);
-    res.status(500).json({ error: 'Could not create payment session — try M-Pesa instead' });
+    res.status(500).json({ error: 'Could not create payment session — please try again' });
   }
 });
 

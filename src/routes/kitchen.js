@@ -72,11 +72,17 @@ router.post('/orders/:id/status', async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    // Only allow valid kitchen status updates
     const allowed = ['cooking', 'ready'];
     if (!allowed.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
+
+    // Fetch order so we can check order_type before dispatching
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, order_type, order_number')
+      .eq('id', id)
+      .single();
 
     const { error } = await supabase
       .from('orders')
@@ -85,13 +91,10 @@ router.post('/orders/:id/status', async (req, res) => {
 
     if (error) throw error;
 
-    // Log for visibility in terminal
     console.log(`🍳 Order ${id} status → ${status}`);
 
-    // When kitchen marks an order ready, immediately dispatch to available riders
-    // dispatchOrder is fire-and-forget — we respond to kitchen instantly
-    // and let dispatch run in the background
-    if (status === 'ready') {
+    // Only dispatch riders for delivery orders — pickup customers collect at counter
+    if (status === 'ready' && order?.order_type !== 'pickup') {
       dispatchOrder(parseInt(id))
         .then(result => {
           if (result.noRiders) {
@@ -102,6 +105,8 @@ router.post('/orders/:id/status', async (req, res) => {
             console.error(`❌ Dispatch failed for order ${id}:`, result.error);
           }
         });
+    } else if (status === 'ready' && order?.order_type === 'pickup') {
+      console.log(`🚶 Pickup order ${order.order_number} ready for collection — no dispatch needed`);
     }
 
     res.json({ success: true, status });

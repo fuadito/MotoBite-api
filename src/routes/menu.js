@@ -71,30 +71,6 @@ router.patch('/:id', authenticate, adminOnly, async (req, res) => {
   }
 });
 
-// Add this route to your menu router file (wherever POST /api/menu and PATCH /api/menu/:id live)
-// It permanently removes a menu item from the database.
-
-// DELETE /api/menu/:id
-router.delete('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { error } = await supabase
-      .from('menu_items')        // ← change to your actual table name if different
-      .delete()
-      .eq('id', id);
-
-    if (error) throw error;
-
-    console.log(`🗑️  Menu item ${id} deleted`);
-    res.json({ success: true });
-
-  } catch (err) {
-    console.error('Delete menu item error:', err.message);
-    res.status(500).json({ error: 'Could not delete item' });
-  }
-});
-
 
 // POST /api/menu
 // Add a brand new menu item
