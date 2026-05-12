@@ -135,7 +135,7 @@ router.post('/', async (req, res) => {
       status: 'pending',
       payment_status: 'pending',
       customer_name: customerName,
-      order_type: order_type || 'delivery'
+      order_type: req.body.order_type || 'delivery' // 'delivery' or 'pickup' — defaults to delivery
     };
 
     console.log('💾 Data to insert:', JSON.stringify(insertData, null, 2));
@@ -253,7 +253,7 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('orders')
       .select('*')
       .eq('id', id)
@@ -536,14 +536,26 @@ router.post('/:id/collected', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // First check what type of order it is
+    const { data: order } = await supabase
+      .from('orders')
+      .select('order_type')
+      .eq('id', id)
+      .single();
+
+      // Auto pick correct status based on order type
+      const newStatus = order.order_type === 'pickup' ? 'delivered' // pickup orders are marked delivered immediately since there's no delivery process 
+      : 'picked_up'; // delivery orders are marked picked_up when rider collects from KFC, then later marked delivered when rider confirms PIN with customer
     const { error } = await supabase
       .from('orders')
-      .update({ status: 'picked_up' })
+      .update({ status: newStatus })
       .eq('id', id);
 
     if (error) throw error;
 
-    res.json({ success: true });
+    console.log(`✅ Order ${id} updated → ${newStatus}`);
+     
+    res.json({ success: true, status:newStatus });
 
   } catch (err) {
     console.error('Collected error:', err.message);
