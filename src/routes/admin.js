@@ -14,6 +14,8 @@ import express from 'express';
 import bcrypt  from 'bcryptjs';
 import supabase from '../services/supabase.js';
 import { sendRiderApproved, sendRiderRejected, sendRiderSuspended, sendDeliveryPIN } from '../services/sms.js';
+import { authenticate } from '../middleware/auth.js';
+import { adminOnly } from '../middleware/adminOnly.js';
 
 const router = express.Router();
 
@@ -66,6 +68,63 @@ router.get('/stats', async (req, res) => {
     res.status(500).json({ error: 'Could not fetch stats' });
   }
 });
+
+// GET /api/admin/revenue/history?days=30
+// Returns daily revenue for the past N days (default 30) for the revenue graph
+
+router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days || '30'), 365); // limit to 90 days for performance
+
+  // Calculate date range
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceISO = since.toISOString();
+
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, food_amount, delivery_fee, created_at, status')
+    .in('status', ['delivered', 'ready', 'paid', 'cooking', 'rider_assigned', 'picked_up ']) // include paid but not yet delivered for more accurate revenue tracking
+    .gte('created_at', sinceISO)
+    .order('created_at', { ascending: true });
+    
+  if (error) throw error; 
+
+  // Group by date 
+  const byDate = {};
+  (data || []).forEach(order => {
+    const date = order.created_at.slice(0, 10); // YYYY-MM-DD
+    if (!byDate[date]) {
+       byDate[date] = {
+        date,
+        orders: 0,
+        food_revenue: 0,
+        delivery_revenue: 0,
+        total: 0
+      };
+    }
+
+    const food = order.food_amount || 0;
+    const delivery = order.delivery_fee || 0;
+    byDate[date].orders += 1;
+    byDate[date].food_revenue += food;
+    byDate[date].delivery_revenue += delivery;
+    byDate[date].total += food + delivery;
+  });
+
+  // Convert to array and sort by date ascending
+  const history = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+
+  const grandTotal = history.reduce((s, d) => s + d.total, 0);
+
+    res.json({ history, grand_total, days });
+    
+  } catch (err) {
+    console.error('Revenue history error:', err.message);
+    res.status(500).json({ error: 'Could not fetch revenue history' });
+  }
+});
+
 
 
 // GET /api/admin/orders
