@@ -21,6 +21,7 @@ import { submitPesapalOrder, getTransactionStatus } from '../services/pesapal.js
 
 import { sendDeliveryPIN } from '../services/sms.js';
 const router = express.Router();
+const pesapalIPNWhitelist = ['52.8.2.100', '54.67.12.34']; // replace with actual Pesapal IPs
 
 function formatPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -155,6 +156,11 @@ router.post('/', async (req, res) => {
       console.error('   Code:', error.code);
       console.error('   Full error:', JSON.stringify(error, null, 2));
       throw new Error(`Supabase error: ${error.message}`);
+    }
+
+    function sanitizeInput(str) {
+      if (!str) return '';
+      return str.trim().slice(0,500); // limit length to prevent abuse
     }
 
     orderData = data;
@@ -334,7 +340,8 @@ router.put('/:id/assign-rider', async (req, res) => {
         rider_phone: rider_phone,
         rider_name: rider.name,
         rider_rating: rider.rating,
-        assigned_at: new Date().toISOString()
+        assigned_at: new Date().toISOString(),
+        notes: sanitizeInput(notes)
       })
       .eq('id', id)
       .select()
@@ -660,7 +667,47 @@ router.post('/:id/confirm-pin', async (req, res) => {
 // Pesapal calls this URL when a payment status changes (IPN = Instant Payment Notification).
 // We verify the transaction status with Pesapal's API, then mark the order paid.
 router.post('/pesapal-ipn', async (req, res) => {
+  // optionall: ip whitelist check
+    const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+    // console.log('📡 Pesapal IPN received from IP:', clientIP); // log to verify, then whitelist
+
+    const { orderTrackingId, status } = req.body;
+
+    // always respond quickly to IPN (pesapal expects a 200 response and retries if it doesn't get one )
+    res.status(200).json({ message: 'IPN received' });
+
+    // process IPN asynchronously
   try {
+    // Double-check that the IPN is from Pesapal (optional but recommended)
+
+    const verification = await verifyPaymentStatus(orderTrackingId);
+    if (!verification.success) {
+      console.error('❌ Pesapal IPN verification failed:', verification.error);
+      return;
+    }
+
+    // verify amount matches our order
+    const { data: order } = await supabase
+    .from('orders')
+    .select('food_amount')
+    .eq('id', req.params.id)
+    .single();
+
+    if (order && verification.amount < order.food_amount) {
+      console.error(`❌ Amount mismatch: IPN ${verification.amount} vs Order ${order.food_amount}`);
+      return;
+    }
+
+    // now safe to mark as paid 
+    await updateOrderPayment(req.params.id, {
+      status: verification.status === 'COMPLETED' ? 'paid' : 'payment_failed',
+      payment_method: 'card',
+      mpesa_reference: `pesapal-${verification.confirmationCode || orderTrackingId }`,
+    });
+  } catch (err) {
+    console.error('❌ Pesapal IPN processing error:', err.message);
+  }
+
     const { OrderTrackingId, OrderMerchantReference, OrderNotificationType } = req.body;
 
     console.log(`📡 Pesapal IPN received — ref: ${OrderMerchantReference}, tracking: ${OrderTrackingId}`);
@@ -681,6 +728,7 @@ router.post('/pesapal-ipn', async (req, res) => {
       console.log(`⚠️  IPN ignored — payment not completed (${txStatus.payment_status_description})`);
       return;
     }
+  });
 
     // Parse order ID from merchant reference MB-{orderNumber}-{orderId}
     const parts   = (OrderMerchantReference || '').split('-');

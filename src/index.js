@@ -13,6 +13,8 @@ import mpesaRoutes    from './routes/mpesa.js';
 import menuRoutes     from './routes/menu.js';
 import authRoutes     from './routes/auth.js';
 import { redispatchStaleOrders } from './services/dispatch.js';
+import rateLimit from 'express-rate-limit';
+
 
 // Load environment variables from .env file
 dotenv.config();
@@ -20,13 +22,48 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { error: 'Too many requests, please try again later.' }
+});
+
+// strict rate limit on auth endpoints to prevent abuse
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+ skipSuccessfulRequests: true, // only count failed attempts
+});
+// Apply auth limiter to auth routes
+app.use('/api/auth', authLimiter);
+// Apply general limiter to all routes  
+app.use('/api', generalLimiter);
+
 // MIDDLEWARE
 
 // Allow frontend to talk to backend (CORS)
+
+const allowedOrigins = [
+  'http://localhost:5500', // live server
+  'http://localhost:3000', // In case frontend is served from same origin in production
+  // Add your production frontend URL here, e.g. 'https://app.motobite.com'
+  'https://moto-bite-web.vercel.app',
+  'https://motobite-api.onrender.com'
+].filter(Boolean); // Remove any empty values
+
 app.use(cors({
-  origin: '*', // In production one can restrict this to their domain
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin || allowedOrigins.includes(origin)) {
+     return callback(null, true);
+    }
+    console.warn(`⚠️ CORS blocked request from origin: ${origin}`);
+    callback(new Error('CORS policy: Origin not allowed'));
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'x-user-phone', 'Authorization']
+  allowedHeaders: ['Content-Type', 'x-user-phone', 'Authorization'],
+  credentials: true // if you need to send cookies or auth headers from frontend, set this to true and ensure your frontend fetch/axios requests have credentials: 'include'
 }));
 
 // Parse incoming JSON request bodies

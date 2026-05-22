@@ -17,6 +17,8 @@ import { sendRiderApproved, sendRiderRejected, sendRiderSuspended, sendDeliveryP
 import { authenticate } from '../middleware/auth.js';
 import { adminOnly } from '../middleware/adminOnly.js';
 
+router.use(authenticate, adminOnly);
+
 const router = express.Router();
 
 // NOTE: authenticate/adminOnly middleware NOT applied globally —
@@ -72,7 +74,7 @@ router.get('/stats', async (req, res) => {
 // GET /api/admin/revenue/history?days=30
 // Returns daily revenue for the past N days (default 30) for the revenue graph
 
-router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
+router.get('/revenue/history', async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || '30'), 365); // limit to 90 days for performance
 
@@ -135,23 +137,38 @@ router.get('/revenue/history', authenticate, adminOnly, async (req, res) => {
 
 router.get('/orders', async (req, res) => {
   try {
-    const { status, limit } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 20); // max 100 per page for performance
+    const offset = (page - 1) * limit;
+
+
+    const status = req.query.status; // optional filter by status
     let query = supabase
       .from('orders')
-      .select('*')
+      .select('*, customers(name)', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .limit(parseInt(limit) || 50);
+      .range(offset, offset + limit - 1);
 
-    if (status) query = query.eq('status', status);
+    if (status) { query = query.eq('status', status); }
 
-    const { data, error } = await query;
+    const { data: orders, error, count } = await query;
     if (error) throw error;
 
-    res.json({ orders: data || [] });
+    res.json({ 
+      orders,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+        hasNext: offset + limit < count,
+        hasPrev: page > 1
+      }
+    });
 
-  } catch (err) {
-    console.error('Admin orders error:', err.message);
-    res.status(500).json({ error: 'Could not fetch orders' });
+  } catch (error) {
+    console.error('❌ Error fetching admin orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders' });
   }
 });
 
@@ -292,7 +309,7 @@ router.post('/riders/suspend', async (req, res) => {
 // POST /api/admin/orders/:id/mark-paid
 // Admin manually confirms payment — moves order from pending to paid
 // FIX: route must be /orders/:id/mark-paid to match frontend call /api/admin/orders/:id/mark-paid
-router.post('/orders/:id/mark-paid', authenticate, adminOnly, async (req, res) => {
+router.post('/orders/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
 

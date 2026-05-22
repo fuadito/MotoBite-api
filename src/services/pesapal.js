@@ -169,5 +169,46 @@ export async function getTransactionStatus(orderTrackingId) {
   // status_code: 1=Completed, 0=Invalid, 2=Failed, 3=Reversed
   return data;
 }
+export async function verifyPesapalPayment(orderTrackingId) {
+  try {
+    const token = await getPesapalToken();
+    const response = await axios.get(
+      `${baseUrl}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderTrackingId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    // validate response structure and status code
+    if (!response.data || response.data.status_code !== '200') {
+     return {
+      success: false,
+      status: response.data?.status || 'error',
+      message: response.data?.message || 'Invalid response from Pesapal'
+     };
+    }
+    const payment = response.data;
 
+    // Additional validation: ensure amounts match expected values, check 
+    // This should be checked against the order details in your database to prevent tampering.
+
+    return {
+      success: true,
+      status: payment.payment_status_description, // e.g. 'Completed'
+     amount: payment.amount,
+     currency: payment.currency,
+     paymentMethod: payment.payment_method,
+     confirmationCode: payment.confirmation_code,
+     paymentAccount: payment.payment_account,
+     trackingId: payment.order_tracking_id, // dont trust this blindly, verify against your database records
+     merchantReference: payment.merchant_reference
+    };
+  } catch (error)
+  {
+    console.error('Error verifying Pesapal payment:', error.message);
+    return {
+      success: false,
+      status: 'error',
+      message: error.message || 'Error verifying payment'
+    };  
+  }
+
+}
 export { BASE };

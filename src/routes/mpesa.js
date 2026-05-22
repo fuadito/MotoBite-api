@@ -8,6 +8,7 @@
 import express from 'express';
 import axios from 'axios';
 import supabase from '../services/supabase.js';
+import crypto from 'crypto';
 
 const router = express.Router();
 
@@ -123,7 +124,38 @@ router.post('/stk-push', async (req, res) => {
 // IMPORTANT: Must respond with 200 immediately — Safaricom retries if slow.
 // Processing happens after the response is sent.
 
-router.post('/callback', async (req, res) => {
+// mpesa callback security middleware
+function validateMpesaCallback(req, res, next) {
+  // in production, safaricom sends a validation request before the actual callback.
+  // for now, we check basic structure and prevent duplicate processing by looking for the expected fields and a valid order reference.
+
+  const { Body } = req.body;
+  if (!Body?.stkCallback) {
+    console.warn('⚠️  Invalid M-Pesa callback received — missing Body.stkCallback');
+    return res.status(400).json({ error: 'Invalid callback structure' });
+  }
+
+  const callback = Body.stkCallback;
+  
+  // prevent replay attacks by checking if the checkout ID exists in our orders
+  const checkoutId = callback.CheckoutRequestID;
+  if (processCallbacks.has(requestId)) {
+    console.log(`⚠️  Duplicate M-Pesa callback ignored: ${requestId}`);
+    return res.status(200).json({ ResultCode: 0, ResultDesc: 'Duplicate callback ignored' });
+  }
+
+  next();
+}
+
+// Store processed callback IDs (use redis in production for persistence across instances)
+const processCallbacks = new Set();
+// clear old entries every hour to prevent memory leak
+setInterval(() => {
+  processCallbacks.clear();
+}, 60 * 60 * 1000);
+
+// Apply the validation middleware to the callback route
+router.post('/callback', validateMpesaCallback, async (req, res) => {
   // Acknowledge Safaricom immediately — do not await anything before this
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
 
@@ -155,6 +187,9 @@ router.post('/callback', async (req, res) => {
 
     console.log(`✅ Payment confirmed — M-Pesa ref: ${mpesaRef} — KES ${amount}`);
 
+    // add  at success
+    processedCallbacks.add(req.body.body.stkCallback.CheckoutRequestID);
+
     // Mark order as paid — Supabase Realtime will push this to kitchen instantly
     await supabase
       .from('orders')
@@ -171,6 +206,5 @@ router.post('/callback', async (req, res) => {
     console.error('M-Pesa callback error:', err.message);
   }
 });
-
 
 export default router;
