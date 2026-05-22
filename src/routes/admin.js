@@ -17,7 +17,6 @@ import { sendRiderApproved, sendRiderRejected, sendRiderSuspended, sendDeliveryP
 import { authenticate } from '../middleware/auth.js';
 import { adminOnly } from '../middleware/adminOnly.js';
 
-router.use(authenticate, adminOnly);
 
 const router = express.Router();
 

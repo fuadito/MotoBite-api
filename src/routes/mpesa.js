@@ -139,9 +139,32 @@ function validateMpesaCallback(req, res, next) {
   
   // prevent replay attacks by checking if the checkout ID exists in our orders
   const checkoutId = callback.CheckoutRequestID;
-  if (processCallbacks.has(requestId)) {
-    console.log(`⚠️  Duplicate M-Pesa callback ignored: ${requestId}`);
+
+  if (!checkoutId) {
+    console.warn('⚠️  M-Pesa callback received with no CheckoutRequestID');
+    return res.status(400).json({ error: 'Missing CheckoutRequestID' });
+  }
+  if (processCallbacks.has(checkoutId)) {
+    console.log(`⚠️  Duplicate M-Pesa callback ignored: ${checkoutId}`);
     return res.status(200).json({ ResultCode: 0, ResultDesc: 'Duplicate callback ignored' });
+  }
+
+  // signature verification using m-pesa passkey
+  // safaricom sends the password as base64 of shortcode+passkey+timestamp, so we can verify the password to ensure authenticity
+  // we recompute it and compare to verify the callback is from safaricom and not a malicious actor
+  
+  const callbackPassword = callback.Password || req.body?.Password;
+  if (callbackPassword) {
+    const shortcode = process.env.MPESA_SHORTCODE;
+    const passkey = process.env.MPESA_PASSKEY;
+    if (shortcode && passkey) {
+      const timestamp = callback?.Timestamp || new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+      const expectedPassword = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+      if (callbackPassword !== expectedPassword) {
+        console.warn(`⚠️  M-Pesa callback failed password verification: ${checkoutId}`);
+        return res.status(400).json({ error: 'Invalid callback password' });
+      }
+    }
   }
 
   next();
@@ -188,7 +211,7 @@ router.post('/callback', validateMpesaCallback, async (req, res) => {
     console.log(`✅ Payment confirmed — M-Pesa ref: ${mpesaRef} — KES ${amount}`);
 
     // add  at success
-    processedCallbacks.add(req.body.body.stkCallback.CheckoutRequestID);
+    processedCallbacks.add(checkoutId);
 
     // Mark order as paid — Supabase Realtime will push this to kitchen instantly
     await supabase

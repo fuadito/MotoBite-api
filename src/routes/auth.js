@@ -12,6 +12,20 @@ const router = express.Router();
 // In-memory OTP store (use Redis in production)
 const otpStore = new Map();
 
+// cleanup expired OTPs every 60 seconds to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [phone, entry] of otpStore) {
+    if (now > entry.expiresAt) {
+      otpStore.delete(phone);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`🧹 Cleaned up ${cleaned} expired OTP entries`);
+  }
+}, 60 * 1000);
 function generatePIN() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }

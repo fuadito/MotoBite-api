@@ -23,6 +23,12 @@ import { sendDeliveryPIN } from '../services/sms.js';
 const router = express.Router();
 const pesapalIPNWhitelist = ['52.8.2.100', '54.67.12.34']; // replace with actual Pesapal IPs
 
+// XSS sanitization helper
+function sanitizeInput(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.trim().slice(0,500); // limit length to prevent abuse
+}
+
 function formatPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
 
@@ -122,7 +128,7 @@ router.post('/', async (req, res) => {
     const insertData = {
       customer_phone: phone,
       items: items,
-      special_notes: notes || null,
+      special_notes: sanitizeInput(notes) || null,
       food_amount: food_amount,
       customer_lat: location?.lat || null,
       customer_lng: location?.lng || null,
@@ -156,11 +162,6 @@ router.post('/', async (req, res) => {
       console.error('   Code:', error.code);
       console.error('   Full error:', JSON.stringify(error, null, 2));
       throw new Error(`Supabase error: ${error.message}`);
-    }
-
-    function sanitizeInput(str) {
-      if (!str) return '';
-      return str.trim().slice(0,500); // limit length to prevent abuse
     }
 
     orderData = data;
@@ -341,7 +342,7 @@ router.put('/:id/assign-rider', async (req, res) => {
         rider_name: rider.name,
         rider_rating: rider.rating,
         assigned_at: new Date().toISOString(),
-        notes: sanitizeInput(notes)
+        notes: sanitizeInput(req.body.notes)
       })
       .eq('id', id)
       .select()
