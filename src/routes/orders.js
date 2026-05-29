@@ -164,7 +164,7 @@ router.post('/', async (req, res) => {
       throw new Error(`Supabase error: ${error.message}`);
     }
 
-    orderData = data;
+    orderData = data;   
     console.log('✅ ORDER CREATED SUCCESSFULLY!');
     console.log('   ID:', orderData.id);
     console.log('   Order Number:', orderData.order_number);
@@ -659,6 +659,63 @@ router.post('/:id/confirm-pin', async (req, res) => {
   }
 });
 
+// POST /api/orders/:id/cancel
+// Customer cancels their pending order from the payment screen
+// Only allowed if status is 'pending' (not yet paid)
+router.post('/:id/cancel', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawPhone = req.headers['x-user-phone'];
+    const phone = formatPhone(rawPhone);
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone required' });
+    }
+
+    // Fetch order and verify ownership
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('id, status, customer_phone, order_number')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Security: only the order owner can cancel
+    if (order.customer_phone !== phone) {
+      return res.status(403).json({ error: 'Not your order' });
+    }
+
+    // Only pending orders can be cancelled
+    if (order.status !== 'pending') {
+      return res.status(409).json({ 
+        error: `Cannot cancel — order is already '${order.status}'` 
+      });
+    }
+
+    // Soft delete: mark as cancelled instead of hard delete
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ 
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: 'customer'
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    console.log(`❌ Order ${order.order_number} cancelled by customer ${phone}`);
+    res.json({ success: true, message: 'Order cancelled' });
+
+  } catch (err) {
+    console.error('Cancel order error:', err.message);
+    res.status(500).json({ error: 'Could not cancel order' });
+  }
+});
+
 
 // ── PESAPAL ROUTES ────────────────────────────────────────────────────────────
 // NOTE: /pesapal-ipn MUST be declared before /:id routes — Express matches
@@ -667,60 +724,25 @@ router.post('/:id/confirm-pin', async (req, res) => {
 // POST /api/orders/pesapal-ipn
 // Pesapal calls this URL when a payment status changes (IPN = Instant Payment Notification).
 // We verify the transaction status with Pesapal's API, then mark the order paid.
+// DELETE EVERYTHING FROM HERE...
+// POST /api/orders/pesapal-ipn
+// Pesapal calls this URL when payment status changes.
+// We verify the transaction, then mark the order paid.
 router.post('/pesapal-ipn', async (req, res) => {
-  // optionall: ip whitelist check
-    const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
-    // console.log('📡 Pesapal IPN received from IP:', clientIP); // log to verify, then whitelist
-
-    const { orderTrackingId, status } = req.body;
-
-    // always respond quickly to IPN (pesapal expects a 200 response and retries if it doesn't get one )
-    res.status(200).json({ message: 'IPN received' });
-
-    // process IPN asynchronously
   try {
-    // Double-check that the IPN is from Pesapal (optional but recommended)
-
-    const verification = await verifyPaymentStatus(orderTrackingId);
-    if (!verification.success) {
-      console.error('❌ Pesapal IPN verification failed:', verification.error);
-      return;
-    }
-
-    // verify amount matches our order
-    const { data: order } = await supabase
-    .from('orders')
-    .select('food_amount')
-    .eq('id', req.params.id)
-    .single();
-
-    if (order && verification.amount < order.food_amount) {
-      console.error(`❌ Amount mismatch: IPN ${verification.amount} vs Order ${order.food_amount}`);
-      return;
-    }
-
-    // now safe to mark as paid 
-    await updateOrderPayment(req.params.id, {
-      status: verification.status === 'COMPLETED' ? 'paid' : 'payment_failed',
-      payment_method: 'card',
-      mpesa_reference: `pesapal-${verification.confirmationCode || orderTrackingId }`,
-    });
-  } catch (err) {
-    console.error('❌ Pesapal IPN processing error:', err.message);
-  }
-
+    // 1. Extract data from Pesapal's request FIRST
     const { OrderTrackingId, OrderMerchantReference, OrderNotificationType } = req.body;
-
+    
     console.log(`📡 Pesapal IPN received — ref: ${OrderMerchantReference}, tracking: ${OrderTrackingId}`);
 
-    // ✅ Always respond 200 immediately — Pesapal retries if we don't
-    res.json({ 
+    // 2. ALWAYS respond 200 immediately — Pesapal retries if we don't
+    res.status(200).json({ 
       orderNotificationType: OrderNotificationType, 
       orderTrackingId:       OrderTrackingId, 
       status:                '200' 
     });
 
-    // Verify transaction status with Pesapal
+    // 3. Verify transaction status with Pesapal API
     const txStatus = await getTransactionStatus(OrderTrackingId);
     console.log(`📡 Pesapal tx status: ${txStatus.payment_status_description} (code ${txStatus.status_code})`);
 
@@ -729,9 +751,8 @@ router.post('/pesapal-ipn', async (req, res) => {
       console.log(`⚠️  IPN ignored — payment not completed (${txStatus.payment_status_description})`);
       return;
     }
-  });
 
-    // Parse order ID from merchant reference MB-{orderNumber}-{orderId}
+    // 4. Parse order ID from merchant reference MB-{orderNumber}-{orderId}
     const parts   = (OrderMerchantReference || '').split('-');
     const orderId = parts[parts.length - 1];
 
@@ -740,10 +761,10 @@ router.post('/pesapal-ipn', async (req, res) => {
       return;
     }
 
-    // Fetch order
+    // 5. Fetch order from database
     const { data: order } = await supabase
       .from('orders')
-      .select('id, status, order_type, order_number, customer_phone')
+      .select('id, status, order_type, order_number, customer_phone, food_amount')
       .eq('id', orderId)
       .single();
 
@@ -752,19 +773,26 @@ router.post('/pesapal-ipn', async (req, res) => {
       return; 
     }
 
-    // Idempotency — skip if already processed
+    // 6. Idempotency — skip if already processed
     if (order.status !== 'pending') {
       console.log(`IPN: order ${order.order_number} already '${order.status}' — skipping`);
       return;
     }
 
+    // 7. Verify amount matches (security check)
+    if (txStatus.amount && parseFloat(txStatus.amount) < order.food_amount) {
+      console.error(`❌ Amount mismatch: IPN ${txStatus.amount} vs Order ${order.food_amount}`);
+      return;
+    }
+
+    // 8. Determine new status
     const isPickup  = order.order_type === 'pickup';
     const newStatus = isPickup ? 'ready' : 'paid';
 
-    // ✅ Build update payload with payment_status
+    // 9. Build update payload
     const updatePayload = {
       status:          newStatus,
-      payment_status:  'paid',                    // ✅ FIXED — was missing
+      payment_status:  'paid',
       payment_method:  'card',
       pesapal_tx_id:   OrderTrackingId,
       mpesa_reference: `PESAPAL-${OrderTrackingId}`,
@@ -773,16 +801,17 @@ router.post('/pesapal-ipn', async (req, res) => {
       pin_attempts:    0,
     };
 
-    // ✅ Generate PIN for delivery orders only
+    // 10. Generate PIN for delivery orders only
     let security_pin = null;
     if (!isPickup) {
-      security_pin                     = Math.floor(1000 + Math.random() * 9000).toString();
-      const pinHash                    = await bcrypt.hash(security_pin, 10);
-      const pinExpiresAt               = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-      updatePayload.pin_hash           = pinHash;
-      updatePayload.pin_expires_at     = pinExpiresAt;
+      security_pin                 = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash                = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt           = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      updatePayload.pin_hash       = pinHash;
+      updatePayload.pin_expires_at = pinExpiresAt;
     }
 
+    // 11. Update order in database
     await supabase
       .from('orders')
       .update(updatePayload)
@@ -790,7 +819,7 @@ router.post('/pesapal-ipn', async (req, res) => {
 
     console.log(`✅ Pesapal IPN — Order ${order.order_number} → ${newStatus} | payment_status → paid`);
 
-    // ✅ Send PIN SMS for delivery orders
+    // 12. Send PIN SMS for delivery orders
     if (!isPickup && security_pin && order.customer_phone) {
       sendDeliveryPIN(order.customer_phone, order.order_number, security_pin)
         .then(r => {
@@ -801,7 +830,7 @@ router.post('/pesapal-ipn', async (req, res) => {
 
   } catch (err) {
     console.error('Pesapal IPN error:', err.message);
-    // Response already sent — just log
+    // Response already sent above — just log the error
   }
 });
 
