@@ -1,25 +1,25 @@
 // src/index.js — MotoBite-api ENTRY POINT
+// UPDATED 2026-05-30: Rider routes now handle auth inline (public login/register,
+//                       protected everything else).  This fixes the 401 errors
+//                       when admin (Supabase auth) tried to call /api/rider/available
+//                       and when riders (phone auth) tried to log in.
 
-// All imports MUST be at the top in ES modules
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import customerRoutes from './routes/customer.js';
-import orderRoutes    from './routes/orders.js';
-import riderRoutes    from './routes/rider.js';
-import kitchenRoutes  from './routes/kitchen.js';
-import adminRoutes    from './routes/admin.js';
-import mpesaRoutes    from './routes/mpesa.js';
-import menuRoutes     from './routes/menu.js';
-import authRoutes     from './routes/auth.js';
+import orderRoutes from './routes/orders.js';
+import riderRoutes from './routes/rider.js';
+import kitchenRoutes from './routes/kitchen.js';
+import adminRoutes from './routes/admin.js';
+import mpesaRoutes from './routes/mpesa.js';
+import menuRoutes from './routes/menu.js';
+import authRoutes from './routes/auth.js';
 import staffAuthRoutes from './routes/staffAuth.js';
 import { requireStaff, requireRole } from './middleware/staffAuth.js';
 import { redispatchStaleOrders } from './services/dispatch.js';
 import rateLimit from 'express-rate-limit';
 
-
-
-// Load environment variables from .env file
 dotenv.config();
 
 const app = express();
@@ -27,37 +27,30 @@ const PORT = process.env.PORT || 3000;
 
 // Rate limiting
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: { error: 'Too many requests, please try again later.' }
 });
 
-// strict rate limit on auth endpoints to prevent abuse
 const authLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 5, // limit each IP to 5 requests per windowMs
-  skipSuccessfulRequests: true, // only count failed attempts
+  windowMs: 60 * 1000,
+  max: 5,
+  skipSuccessfulRequests: true,
 });
 
-// Apply auth limiter to auth routes
 app.use('/api/auth', authLimiter);
-// Apply general limiter to all routes  
 app.use('/api', generalLimiter);
 
-// MIDDLEWARE
-
-// Allow frontend to talk to backend (CORS)
-
+// CORS
 const allowedOrigins = [
-  'http://localhost:5500', // live server
+  'http://localhost:5500',
   'http://localhost:3000',
   'https://moto-bite-web.vercel.app',
   'https://motobite-api.onrender.com'
-].filter(Boolean); // Remove any empty values
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
@@ -69,15 +62,10 @@ app.use(cors({
   credentials: true
 }));
 
-// Parse incoming JSON request bodies
 app.use(express.json());
-
-// Parse URL-encoded bodies
 app.use(express.urlencoded({ extended: true }));
 
-
-// HEALTH CHECK
-// Visit http://localhost:3000/health to confirm server is running
+// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'running',
@@ -86,44 +74,44 @@ app.get('/health', (req, res) => {
   });
 });
 
-
 setInterval(async () => {
   try {
     await fetch(`${process.env.BACKEND_URL || 'http://localhost:3000'}/health`);
     console.log('🏓 Keep-alive ping sent');
   } catch(e) {}
-}, 14 * 60 * 1000); // ping every 14 minutes
+}, 14 * 60 * 1000);
 
-
+// ═══════════════════════════════════════════════════════════
 // ROUTES
-// Each role has its own route file in src/routes/
+// ═══════════════════════════════════════════════════════════
 
-// Auth routes — NO middleware (login endpoints)
+// Auth — no middleware
 app.use('/api/auth', authRoutes);
 
-// Public / customer-facing routes (no staff auth required)
+// Public / customer-facing
 app.use('/api/customer', customerRoutes);
-app.use('/api/orders',   orderRoutes);
-app.use('/api/menu',     menuRoutes);
-app.use('/api/mpesa',    mpesaRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/menu', menuRoutes);
+app.use('/api/mpesa', mpesaRoutes);
 
 // Staff authentication (separate from customer auth)
 app.use('/api/staff', staffAuthRoutes);
 
-// Protected staff routes — mounted ONCE with auth middleware
+// Protected staff routes
 app.use('/api/kitchen', requireStaff, requireRole('kitchen', 'admin'), kitchenRoutes);
-app.use('/api/rider',   requireStaff, requireRole('rider', 'admin'), riderRoutes);
-app.use('/api/admin',   requireStaff, requireRole('admin'), adminRoutes);
+app.use('/api/admin',  requireStaff, requireRole('admin'),           adminRoutes);
 
+// FIX: Rider routes now handle auth INLINE inside rider.js.
+//      /login and /register are public; everything else is protected.
+//      This lets Supabase-authenticated admins hit /api/rider/available
+//      and phone-authenticated riders hit /api/rider/availability etc.
+app.use('/api/rider', riderRoutes);
 
-// 404 HANDLER
-// Catches any route that doesn't exist
+// 404 & ERROR HANDLERS
 app.use((req, res) => {
   res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
 });
 
-// ERROR HANDLER
-// Catches any unhandled errors in routes
 app.use((err, req, res, next) => {
   console.error('❌ Server error:', err.message);
   res.status(500).json({ error: 'Internal server error' });
@@ -134,8 +122,6 @@ app.listen(PORT, () => {
   console.log(`✅ MotoBite-api running on http://localhost:${PORT}`);
   console.log(`📋 Health check: http://localhost:${PORT}/health`);
 
-  // Re-dispatch any "ready" orders with no rider every 3 minutes
-  // Catches cases where no riders were online when kitchen first marked ready
   setInterval(redispatchStaleOrders, 3 * 60 * 1000);
   console.log(`🔄 Re-dispatch timer started — checks every 3 minutes`);
 });
