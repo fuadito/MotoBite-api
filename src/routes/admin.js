@@ -48,6 +48,13 @@ router.get('/stats', async (req, res) => {
       .gte('delivered_at', todayStart.toISOString())
       .lte('delivered_at', todayEnd.toISOString());
 
+    const { data: cancelledToday } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('status', 'cancelled')
+      .gte('cancelled_at', todayStart.toISOString())
+      .lte('cancelled_at', todayEnd.toISOString());
+
     const { data: onlineRiders } = await supabase
       .from('riders')
       .select('id')
@@ -58,10 +65,11 @@ router.get('/stats', async (req, res) => {
       .reduce((sum, o) => sum + o.food_amount, 0);
 
     res.json({
-      active_orders:   (activeOrders   || []).length,
+      active_orders: (activeOrders || []).length,
       delivered_today: (deliveredToday || []).length,
-      revenue_today:   revenueToday,
-      online_riders:   (onlineRiders   || []).length
+      cancelled_today: (cancelledToday || []).length,
+      revenue_today: revenueToday,
+      online_riders: (onlineRiders || []).length
     });
 
   } catch (err) {
@@ -399,6 +407,59 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
   }
 });
 
+// POST /api/admin/orders/:id/reject
+// Admin rejects an order due to no payment confirmation
+router.post('/orders/:id/reject', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    // Fetch order
+    const { data: order, error: fetchError } = await supabase
+      .from('orders')
+      .select('id, order_number, customer_phone, status, order_type')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Only reject pending orders
+    if (order.status !== 'pending') {
+      return res.status(409).json({ 
+        error: `Cannot reject — order is already '${order.status}'` 
+      });
+    }
+
+    // Update order to cancelled
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: 'admin',
+        cancellation_reason: reason || 'No payment confirmation'
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    // Notify customer via SMS
+    if (order.customer_phone) {
+      const msg = `Your KFC Narok order ${order.order_number} has been cancelled. Reason: ${reason || 'Payment not received'}. Please place a new order.`;
+      sendSMS(order.customer_phone, msg).catch(() => {});
+    }
+
+    console.log(`🚫 Order ${order.order_number} rejected by admin`);
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Reject order error:', err.message);
+    res.status(500).json({ error: 'Could not reject order' });
+  }
+});
+
 // POST /api/admin/riders/unsuspend
 // Lift a suspension — reinstates rider to approved status
 
@@ -436,7 +497,58 @@ router.post('/riders/unsuspend', async (req, res) => {
   }
 });
 
-// GET /api/admin/orders — support status filter
-// Already defined above; adding delivered filter for revenue endpoint
+// ── CUSTOMER MANAGEMENT ───────────────────────────────────────────────────
+
+// GET /api/admin/customers
+// List all customers with order counts
+router.get('/customers', async (req, res) => {
+  try {
+    const { data: customers, error } = await supabase
+      .from('customers')
+      .select('*, orders(count)')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(customers || []);
+
+  } catch (err) {
+    console.error('Customers error:', err.message);
+    res.status(500).json({ error: 'Could not fetch customers' });
+  }
+});
+
+// DELETE /api/admin/customers/:phone
+// Permanently remove a customer and all their data
+router.delete('/customers/:phone', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const normalizedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+
+    if (!confirm) {
+      return res.status(400).json({ error: 'Phone required' });
+    }
+
+    // Delete customer's orders first (or mark them)
+    await supabase
+      .from('orders')
+      .delete()
+      .eq('customer_phone', normalizedPhone);
+
+    // Delete customer record
+    const { error } = await supabase
+      .from('customers')
+      .delete()
+      .eq('phone', normalizedPhone);
+
+    if (error) throw error;
+
+    console.log(`🗑️ Customer ${normalizedPhone} permanently deleted`);
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Delete customer error:', err.message);
+    res.status(500).json({ error: 'Could not delete customer' });
+  }
+});
 
 export default router;

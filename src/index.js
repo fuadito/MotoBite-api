@@ -29,7 +29,16 @@ const PORT = process.env.PORT || 3000;
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: { error: 'Too many requests, please try again later.' }
+  message: { error: 'Too many requests, please try again later.' },
+  skip: (req) => {
+    // Don't rate-limit requests from your own Vercel app
+    const origin = req.headers.origin || '';
+    return origin === 'https://moto-bite-web.vercel.app';
+  },
+  keyGenerator: (req) => {
+    // Rate limit by phone number if available, else by IP
+    return req.headers['x-user-phone'] || req.ip;
+  }
 });
 
 const authLimiter = rateLimit({
