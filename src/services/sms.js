@@ -47,9 +47,10 @@ function formatPhone(phone) {
 }
 
 // ─── Validate Kenyan number ───────────────────────────────────────────────────
+// Accepts any +254 number with 9 digits after the prefix.
+// Old regex [17] only allowed +2547 and +2541 — rejecting valid numbers silently.
 function isValidKenyanNumber(phone) {
-  // Must be +2547XXXXXXXX or +2541XXXXXXXX (12 digits total)
-  return /^\+254[17]\d{8}$/.test(phone);
+  return /^\+254\d{9}$/.test(phone);
 }
 
 // ─── CORE SEND ────────────────────────────────────────────────────────────────
@@ -59,19 +60,20 @@ function isValidKenyanNumber(phone) {
 export async function sendSMS(phone, message) {
   try {
     if (!smsClient) {
-      console.warn('⚠️ SMS skipped — Africa\'s Talking not configured');
+      console.error('❌ SMS not sent — Africa\'s Talking client is not initialized.');
+      console.error('   → Check AT_USERNAME and AT_API_KEY are set in your Render environment variables.');
       return false;
     }
 
     const normalized = formatPhone(phone);
+    console.log(`📱 sendSMS called → raw: ${phone} → normalized: ${normalized}`);
 
-    // ✅ Validate number format
     if (!isValidKenyanNumber(normalized)) {
-      console.error(`❌ Invalid Kenyan number: ${normalized}`);
+      console.error(`❌ Invalid Kenyan number after normalization: "${normalized}"`);
+      console.error(`   → Raw input was: "${phone}"`);
+      console.error(`   → Expected format: +254XXXXXXXXX (12 digits total)`);
       return false;
     }
-
-    console.log(`📱 Sending SMS to ${normalized}`);
 
     const result = await smsClient.send({
       to: [normalized],
