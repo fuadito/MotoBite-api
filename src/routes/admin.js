@@ -311,16 +311,13 @@ router.post('/riders/suspend', async (req, res) => {
     res.status(500).json({ error: 'Could not suspend rider' });
   }
 });
-
-
 // POST /api/admin/orders/:id/mark-paid
 // Admin manually confirms payment — moves order from pending to paid
-// FIX: route must be /orders/:id/mark-paid to match frontend call /api/admin/orders/:id/mark-paid
 router.post('/orders/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // ✅ Step 1: Fetch the order FIRST — read only, no update yet
+    // Step 1: Fetch the order
     const { data: existingOrder, error: fetchError } = await supabase
       .from('orders')
       .select('id, order_number, order_type, customer_phone, status')
@@ -331,7 +328,6 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // Guard — don't re-process already paid orders
     if (existingOrder.status !== 'pending') {
       return res.status(409).json({ 
         error: `Order is already '${existingOrder.status}' — cannot mark as paid again` 
@@ -340,26 +336,26 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
 
     const isPickup = existingOrder.order_type === 'pickup';
 
-    // ✅ Step 2: Build update payload
+    // Step 2: Build update payload
     const updatePayload = {
-      status:          'paid',
-      payment_status:  'paid',                    // ✅ FIX — was missing
-      paid_at:         new Date().toISOString(),
-      updated_at:      new Date().toISOString(),
+      status: 'paid',
+      payment_status: 'paid',
+      paid_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    // ✅ Step 3: Generate PIN for delivery orders only
+    // Step 3: Generate PIN for delivery orders only
     let security_pin = null;
     if (!isPickup) {
-      security_pin                 = Math.floor(1000 + Math.random() * 9000).toString();
-      const pinHash                = await bcrypt.hash(security_pin, 10);
-      const pinExpiresAt           = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-      updatePayload.pin_hash       = pinHash;
+      security_pin = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      updatePayload.pin_hash = pinHash;
       updatePayload.pin_expires_at = pinExpiresAt;
-      updatePayload.pin_attempts   = 0;
+      updatePayload.pin_attempts = 0;
     }
 
-    // ✅ Step 4: Single update with full payload
+    // Step 4: Update order
     const { data: updatedOrder, error: updateError } = await supabase
       .from('orders')
       .update(updatePayload)
@@ -369,25 +365,35 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
 
     if (updateError) throw updateError;
 
-    // ✅ Step 5: Send PIN SMS for delivery only
+    // Step 5: Send PIN SMS for delivery only
     if (!isPickup && security_pin && updatedOrder.customer_phone) {
-      sendDeliveryPIN(updatedOrder.customer_phone, updatedOrder.order_number, security_pin)
-        .then(r => {
-          if (!r) console.warn(`⚠️  PIN SMS failed for order ${updatedOrder.order_number}`);
-          else    console.log(`📱 PIN SMS sent to ${updatedOrder.customer_phone}`);
-        });
-      console.log(`✅ Delivery order ${updatedOrder.order_number} marked paid — PIN: ${security_pin}`);
+      console.log(`📱 [mark-paid] Sending PIN SMS for order ${updatedOrder.order_number}`);
+      console.log(`   → Phone: ${updatedOrder.customer_phone}`);
+      console.log(`   → PIN: ${security_pin}`);
+      
+      try {
+        const smsResult = await sendDeliveryPIN(updatedOrder.customer_phone, updatedOrder.order_number, security_pin);
+        console.log(`   → SMS result: ${smsResult}`);
+        
+        if (smsResult === true) {
+          console.log(`✅ PIN SMS sent successfully to ${updatedOrder.customer_phone}`);
+        } else {
+          console.warn(`⚠️ PIN SMS returned false — check Africa's Talking credits/config`);
+        }
+      } catch (smsErr) {
+        console.error(`❌ PIN SMS threw error:`, smsErr.message);
+      }
     } else {
-      console.log(`✅ Pickup order ${updatedOrder.order_number} marked paid — no PIN needed`);
+      console.log(`ℹ️ No PIN SMS sent. isPickup=${isPickup}, hasPhone=${!!updatedOrder.customer_phone}, hasPin=${!!security_pin}`);
     }
 
-    // ✅ Step 6: Notify kitchen via Realtime
+    // Step 6: Notify kitchen via Realtime
     const channel = supabase.channel('kitchen-orders');
     await channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await channel.send({
-          type:    'broadcast',
-          event:   'order_paid',
+          type: 'broadcast',
+          event: 'order_paid',
           payload: updatedOrder
         });
         await channel.unsubscribe();
@@ -395,10 +401,10 @@ router.post('/orders/:id/mark-paid', async (req, res) => {
     });
 
     res.json({ 
-      success:  true, 
-      pin:      security_pin, 
+      success: true, 
+      pin: security_pin, 
       isPickup, 
-      order:    updatedOrder 
+      order: updatedOrder 
     });
 
   } catch (err) {
