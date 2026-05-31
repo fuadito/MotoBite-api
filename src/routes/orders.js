@@ -441,42 +441,72 @@ router.put('/:id/confirm-payment', async (req, res) => {
       .single();
 
     if (fetchError || !currentOrder) {
-      console.error('❌ Order not found:', fetchError?.message);
       return res.status(404).json({ error: 'Order not found' });
     }
-    console.log('📦 Current order status:', currentOrder.status);
+
+    const isPickup = currentOrder.order_type === 'pickup';
+
+    // Build update payload
+    const updatePayload = {
+      payment_status: 'paid',
+      status: currentOrder.status === 'pending' ? 'paid' : currentOrder.status,
+      paid_at: new Date().toISOString()
+    };
+
+    // ✅ FIX: Generate PIN for delivery orders
+    let security_pin = null;
+    if (!isPickup) {
+      security_pin = Math.floor(1000 + Math.random() * 9000).toString();
+      const pinHash = await bcrypt.hash(security_pin, 10);
+      const pinExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      updatePayload.pin_hash = pinHash;
+      updatePayload.pin_expires_at = pinExpiresAt;
+      updatePayload.pin_attempts = 0;
+    }
 
     const { data: order, error: updateError } = await supabase
       .from('orders')
-      .update({
-        payment_status: 'paid',
-        status: currentOrder.status === 'pending' ? 'paid' : currentOrder.status,
-        paid_at: new Date().toISOString()
-      })
+      .update(updatePayload)
       .eq('id', id)
       .select()
       .single();
 
-    if (updateError) {
-      console.error('❌ Update error:', updateError);
-      throw updateError;
+    if (updateError) throw updateError;
+
+    // ✅ FIX: Send PIN SMS for delivery orders
+    if (!isPickup && security_pin && order.customer_phone) {
+      try {
+        const smsResult = await sendDeliveryPIN(order.customer_phone, order.order_number, security_pin);
+        console.log(`📱 PIN SMS result: ${smsResult}`);
+      } catch (smsErr) {
+        console.error(`❌ PIN SMS error:`, smsErr.message);
+      }
     }
 
-    console.log('✅ Payment confirmed');
+    // ✅ FIX: Notify kitchen via Realtime
+    const channel = supabase.channel('kitchen-orders');
+    await channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await channel.send({
+          type: 'broadcast',
+          event: 'order_paid',
+          payload: order
+        });
+        await channel.unsubscribe();
+      }
+    });
+
     res.json({
       success: true,
-      message: 'Payment confirmed successfully',
+      pin: security_pin,
       order: order
     });
+
   } catch (err) {
     console.error('❌ Confirm payment error:', err.message);
-    res.status(500).json({
-      error: 'Could not confirm payment',
-      details: err.message
-    });
+    res.status(500).json({ error: 'Could not confirm payment' });
   }
 });
-
 // ═══════════════════════════════════════════════════════════
 // POST /api/orders/:id/rate  (UNCHANGED)
 // ═══════════════════════════════════════════════════════════
